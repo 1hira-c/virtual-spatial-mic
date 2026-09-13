@@ -1,0 +1,21 @@
+[package]
+name = "vsm-live"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vsm-core = { path = "../vsm-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+socket2 = { version = "0.6", features = ["all"] }
+if-addrs = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["blocking"] }
+fs2 = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_NetworkManagement_Dns", "Win32_System_LibraryLoader", "Win32_Devices_FunctionDiscovery", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Performance", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Win32_Security"] }

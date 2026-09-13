@@ -1,0 +1,11 @@
+/.deps/
+/target/
+/out/
+**/__pycache__/
+*.pyc
+apps/desktop/src-tauri/gen/
+.DS_Store
+Thumbs.db
+.env
+.env.*
+*.lnk

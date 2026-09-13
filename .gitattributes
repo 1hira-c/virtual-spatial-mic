@@ -1,0 +1,6 @@
+* text=auto eol=lf
+docs/third-party/** -text
+integrations/unity/Assets/** -text
+*.unitypackage binary
+*.png binary
+*.ico binary

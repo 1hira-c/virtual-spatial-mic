@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Local application window; file selection and playback are checked in Rust.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

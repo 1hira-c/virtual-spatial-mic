@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Virtual Spatial Mic</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <!-- Live Studio Section -->
+  <section class="card live" aria-labelledby="live-title">
+    <div class="section-head">
+      <div class="section-title-group">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="2"/>
+          <path d="M16.24 7.76a6 6 0 0 1 0 8.49"/>
+          <path d="M7.76 16.24a6 6 0 0 1 0-8.49"/>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+          <path d="M4.93 19.07a10 10 0 0 1 0-14.14"/>
+        </svg>
+        <h2 id="live-title">ライブ収録</h2>
+      </div>
+      <div class="status-group" style="display: flex; gap: 8px; align-items: center;">
+        <span class="status-pill" id="runtime" hidden>
+          <span class="status-dot"></span>
+          <span class="label"></span>
+        </span>
+        <span id="live-state" class="status-pill">
+          <span class="status-dot"></span>
+          <span class="label">待機中</span>
+        </span>
+      </div>
+    </div>
+
+    <div class="input-settings" role="group" aria-label="入力設定">
+    <div class="fields">
+      <label>
+        <span class="field-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          </svg>
+          マイク入力
+        </span>
+        <select id="microphone">
+          <option value="">マイクを選んでください</option>
+        </select>
+      </label>
+
+
+      <label class="channel">
+        <span class="field-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/>
+            <line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/>
+            <line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/>
+            <line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/>
+            <line x1="17" x2="23" y1="16" y2="16"/>
+          </svg>
+          使用チャンネル
+        </span>
+        <select id="channel">
+          <option value="0">1（左 / モノラル）</option>
+          <option value="1">2（右）</option>
+        </select>
+      </label>
+
+
+    </div>
+
+    <div class="input-level">
+      <div class="level-meter" id="level-input" title="選択中のマイクチャンネル・ゲイン調整前">
+        <div class="level-heading"><span>入力</span><span class="level-number">−∞ <small>dBFS</small></span></div>
+        <div class="level-track" role="meter" aria-label="マイク入力" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60" aria-valuetext="無音"><i class="level-fill"></i><i class="level-hold"></i></div>
+        <span class="level-clip" hidden>CLIP</span>
+      </div>
+    </div>
+
+    </div>
+
+    <div class="input-controls">
+    <div class="actions">
+      <button id="input-toggle" class="btn-secondary">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 10v4"/><path d="M6 7v10"/><path d="M10 4v16"/><path d="M14 7v10"/><path d="M18 4v16"/><path d="M22 10v4"/>
+        </svg>
+        <span class="label">入力を有効にする</span>
+      </button>
+      <button id="record-toggle" class="btn-record" disabled>
+        <span class="rec-led"></span>
+        <span class="label">録音を開始</span>
+      </button>
+      <span id="record-state" role="status"></span>
+    </div>
+    <p id="pose-state" class="hint">VRChatとカメラを準備してから、入力を有効にしてください。</p>
+    </div>
+
+    <div class="output-section" role="group" aria-label="出力設定">
+      <div class="output-controls">
+        <div class="output-levels" role="group" aria-labelledby="output-level-title">
+          <div class="level-title" id="output-level-title">出力</div>
+          <div class="level-rows">
+      <div class="level-meter" id="level-left" title="バイノーラル処理・ゲイン・リミッター適用後（モニターのON/OFFに依存しません）">
+        <div class="level-heading"><span>L</span><span class="level-number">−∞ <small>dBFS</small></span></div>
+        <div class="level-track" role="meter" aria-label="処理後の左出力" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60" aria-valuetext="無音"><i class="level-fill"></i><i class="level-hold"></i></div>
+        <span class="level-clip" hidden>CLIP</span>
+      </div>
+      <div class="level-meter" id="level-right" title="バイノーラル処理・ゲイン・リミッター適用後（モニターのON/OFFに依存しません）">
+        <div class="level-heading"><span>R</span><span class="level-number">−∞ <small>dBFS</small></span></div>
+        <div class="level-track" role="meter" aria-label="処理後の右出力" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60" aria-valuetext="無音"><i class="level-fill"></i><i class="level-hold"></i></div>
+        <span class="level-clip" hidden>CLIP</span>
+      </div>
+          </div>
+        </div>
+      <label class="gain">
+        <div class="gain-header">
+          <span class="field-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            </svg>
+            出力ゲイン
+          </span>
+          <output id="gain-value">−18 dB</output>
+        </div>
+        <input type="range" id="gain" min="-60" max="0" value="-18" step="1">
+      </label>
+      </div>
+    <div class="monitor">
+      <label for="monitor-device" class="field-label">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>
+        </svg>
+        モニター出力
+      </label>
+      <select id="monitor-device">
+        <option value="">出力先を選んでください</option>
+      </select>
+      <button id="monitor-toggle" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </svg>
+        <span class="label">モニター</span>
+      </button>
+      <span id="monitor-state" class="hint"></span>
+    </div>
+    </div>
+
+    <details class="recording-settings" id="save-settings">
+      <summary>
+        <svg class="disclosure-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+        <span>保存先設定</span>
+        <span id="save-summary" class="output-summary"></span>
+      </summary>
+    <div class="save-line">
+      <label class="check">
+        <input type="checkbox" id="save-raw" checked>
+        再処理用の生データを保存する
+      </label>
+      <span class="hint">原音・位置・時刻を保存</span>
+    </div>
+
+    <div class="folder-line">
+      <span class="folder-icon-wrap">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+        </svg>
+      </span>
+      <span id="output-root" class="path"></span>
+      <button id="choose-root">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>
+        </svg>
+        <span>保存先変更</span>
+      </button>
+    </div>
+
+    </details>
+
+    <details>
+      <summary>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16" y2="12"/><line x1="12" x2="12.01" y1="8" y2="8"/>
+        </svg>
+        接続・テレメトリ診断
+      </summary>
+      <div id="connection" class="connection-box">未接続</div>
+      <p class="hint" style="margin-top: 8px;">カメラ位置は最後に受信した値を維持します。入力待機中の生データはメモリ内に保持し、録音開始時に直前の分も保存します。</p>
+    </details>
+  </section>
+
+  <!-- Library Section -->
+  <section class="card" aria-labelledby="recordings-title">
+    <div class="section-head">
+      <div class="section-title-group">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>
+        </svg>
+        <div>
+          <h2 id="recordings-title">録音ライブラリ</h2>
+          <p class="hint">バイノーラル処理音声をプレビュー / 原音から音量・位置パラメータを再計算</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="open-recordings" title="録音の保存先をエクスプローラーで開く">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>
+          </svg>
+          <span>フォルダーを開く</span>
+        </button>
+        <button id="open-session" title="別の場所にある録音をライブラリで開く">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4l2 3h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2Z"/><path d="M12 10v6m-3-3h6"/>
+          </svg>
+          <span>別の録音を開く</span>
+        </button>
+        <button id="refresh" class="btn-icon-only" title="一覧を更新">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="library">
+      <div id="recordings" role="listbox" aria-label="保存した録音">
+        <p class="empty">保存した録音がここに並びます。</p>
+      </div>
+
+      <div class="detail">
+        <div class="detail-title" id="name-display">
+          <h3 id="selected-name">録音を選んでください</h3>
+          <button id="rename" class="btn-icon-only" title="録音名を変更" aria-label="録音名を変更" disabled>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-13 13H3v-5Z"/><path d="m14 5 5 5"/></svg>
+          </button>
+        </div>
+        <form id="rename-form" hidden>
+          <div class="detail-title">
+            <input id="rename-input" type="text" aria-label="録音名" aria-describedby="rename-error" maxlength="255" autocomplete="off" required>
+            <button type="submit" id="rename-save" class="btn-icon-only" title="保存" aria-label="名前を保存"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button>
+            <button type="button" id="rename-cancel" class="btn-icon-only" title="キャンセル" aria-label="名前の変更をキャンセル"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+          </div>
+          <p id="rename-error" role="alert" hidden></p>
+        </form>
+        <p id="selected-info" class="hint">録音停止後は、すぐに処理済み音声を聴けます。</p>
+
+        <div class="actions">
+          <button id="play-processed" disabled class="btn-primary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="6 3 20 12 6 21 6 3"/>
+            </svg>
+            <span>処理済み音声</span>
+          </button>
+          <button id="play-original" disabled class="btn-secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="6 3 20 12 6 21 6 3"/>
+            </svg>
+            <span>原音 (RAW)</span>
+          </button>
+          <button id="reveal" disabled class="btn-icon-only" title="エクスプローラーで保存場所を表示">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+            </svg>
+          </button>
+        </div>
+
+        <p id="playing" class="hint"></p>
+        <audio id="player" controls preload="metadata"></audio>
+
+        <details class="recording-settings" id="reprocess-settings">
+          <summary>
+            <svg class="disclosure-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+            <span>再処理</span>
+          </summary>
+        <div class="reprocess">
+          <label>
+            再処理の出力音量
+            <select id="render-gain">
+              <option value="-24">−24 dB</option>
+              <option value="-18" selected>−18 dB</option>
+              <option value="-12">−12 dB</option>
+              <option value="-6">−6 dB</option>
+              <option value="0">0 dB</option>
+            </select>
+          </label>
+
+          <label>
+            位置の取得方法
+            <select id="source-mode">
+              <option value="auto">自動（記録済みのプローブを優先）</option>
+              <option value="head_offset">頭部＋保存済み口元オフセット</option>
+              <option value="mouth_probe">口元プローブ</option>
+            </select>
+          </label>
+
+          <div class="actions">
+            <button id="render" class="btn-primary" disabled>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+              </svg>
+              <span>原音から再処理</span>
+            </button>
+            <button id="cancel" class="btn-secondary" hidden>キャンセル</button>
+          </div>
+
+          <progress id="progress" max="1" value="0" hidden></progress>
+          <p id="render-state" class="hint" role="status"></p>
+        </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <p id="notice" role="alert" hidden></p>
+</main>
+</body>
+</html>

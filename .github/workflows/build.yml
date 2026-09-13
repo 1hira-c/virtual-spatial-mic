@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            .deps
+          key: vsm-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/dependencies.lock.json') }}
+      - run: rustup show
+      - run: python tools/bootstrap.py
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --release --workspace
+      - run: pwsh tools/build-product.ps1 -OutputDirectory out/product
+      - uses: actions/upload-artifact@v4
+        with:
+          name: virtual-spatial-mic-windows-development
+          path: out/product
+          if-no-files-found: error
+  linux-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: rustup show
+      - run: python3 tools/bootstrap.py
+      - run: cargo test --locked --release -p vsm-core -p vsm-live
