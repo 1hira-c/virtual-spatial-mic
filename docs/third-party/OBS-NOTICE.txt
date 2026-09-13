@@ -1,0 +1,23 @@
+OBS Studio 32.2.2
+https://github.com/obsproject/obs-studio/tree/32.2.2
+
+The OBS API declarations in crates/vsm-obs/src/bindings.rs were generated
+from OBS Studio headers using rust-bindgen 0.72.1. This is a generated Rust
+representation, not the original C headers. The original OBS portions
+remain under GPL-2.0-or-later; they are not relicensed under VSM's MIT license.
+
+OBS libobs/obs.h and libobs/obs-module.h:
+Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
+
+OBS Studio is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 2 of the License, or (at your
+option) any later version.
+
+It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for details.
+
+The combined VSM OBS plugin binary is distributed under GPL version 3.
+See GPL-3.0.txt, the retained OBS-GPL-2.0.txt, and SOURCE.txt in the binary
+package. The MIT notice for VSM's independently written portions is retained.

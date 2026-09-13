@@ -2,6 +2,7 @@
 name = "vsm-obs"
 version.workspace = true
 edition.workspace = true
+license = "MIT AND GPL-2.0-or-later"
 publish.workspace = true
 [lib]
 name = "vrc_binaural_studio"

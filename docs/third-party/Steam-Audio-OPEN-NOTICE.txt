@@ -1,0 +1,21 @@
+Steam Audio 4.8.1, source-built for Virtual Spatial Mic
+Upstream revision: 0da18255cca520771f363ee01f100572b39a308e
+Copyright 2017-2023 Valve Corporation.
+Licensed under the Apache License, Version 2.0.
+
+This build disables Intel IPP, Intel MKL, Intel Embree, AMD Radeon Rays,
+AMD TrueAudio Next and FFTS. It uses PFFFT for FFT operations.
+The retained upstream third-party notice covers multiple build configurations;
+its sections for disabled dependencies do not mean those libraries are linked.
+
+Included components: PFFFT, libmysofa, zlib, FlatBuffers headers,
+CIPIC HRTF data, and Google's spherical harmonics code. Their original
+copyright and license notices are retained with the corresponding sources.
+
+Build changes: upstream zlib install configuration is adapted to install
+the static target only. The build adapter supplies CMake CMP0091=NEW so
+MSVC runtime selection is honored, and builds dependencies from preserved
+source snapshots without resetting local modifications.
+
+See Steam-Audio-APACHE-2.0.txt, Steam-Audio-THIRDPARTY.md,
+Steam-Audio-OPEN-DEPENDENCIES.txt, and SOURCE.txt.

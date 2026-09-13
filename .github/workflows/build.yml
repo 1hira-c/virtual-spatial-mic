@@ -24,7 +24,7 @@ jobs:
             ~/.cargo/git
             target
             .deps
-          key: vsm-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/dependencies.lock.json') }}
+          key: vsm-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/dependencies.lock.json', 'tools/build_steam_audio.py') }}
       - run: rustup show
       - run: python tools/bootstrap.py
       - run: cargo fmt --all -- --check

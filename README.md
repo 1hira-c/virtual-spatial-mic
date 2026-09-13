@@ -44,6 +44,6 @@ Windowsでは入力を有効にした際、ファイアウォールの通信許�
 
 製品はRust/Tauriで構成しています。[ビルド手順と構成](docs/development.md)、[依存物とライセンス](docs/dependencies.md)を参照してください。
 
-VSM独自部分は [MIT License](LICENSE) です。第三者コンポーネントの条件と、OBSプラグインについての確認事項は [ライセンスの適用範囲](LICENSES.md) を参照してください。
+VSM独自部分は [MIT License](LICENSE) です。OBSプラグインの生成物はGPLv3で配布します。第三者コンポーネントの条件と対応ソースについては [ライセンスの適用範囲](LICENSES.md) を参照してください。
 
 Virtual Spatial MicはVRChat Inc.との提携・承認関係にない非公式プロジェクトです。VRChatおよび関連する商標は、それぞれの権利者に帰属します。

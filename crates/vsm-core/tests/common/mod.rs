@@ -19,6 +19,14 @@ pub fn root() -> PathBuf {
         .unwrap()
 }
 pub fn library() -> PathBuf {
+    if let Some(path) = std::env::var_os("VSM_TEST_STEAM_AUDIO") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_file(),
+            "Configured Steam Audio test library is missing"
+        );
+        return path;
+    }
     root().join(if cfg!(windows) {
         ".deps/steam-audio-4.8.1/steamaudio/lib/windows-x64/phonon.dll"
     } else {

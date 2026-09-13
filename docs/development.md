@@ -2,7 +2,7 @@
 
 ## Windows
 
-必要なものはRust 1.96.0、MSVC x64のリンクツール、Windows SDK、WebView2 Runtimeです。Rustの版は `rust-toolchain.toml`、クレートは `Cargo.lock` に固定しています。依存SDKの取得にPython 3を使います。Pythonは開発時だけ必要です。
+必要なものはRust 1.96.0、MSVC x64のリンクツール、Windows SDK、WebView2 Runtime、CMake 3.x、Gitです。Rustの版は `rust-toolchain.toml`、クレートは `Cargo.lock` に固定しています。依存SDKの取得にPython 3を使います。Pythonは開発時だけ必要です。
 
 リポジトリ直下で実行します。
 
@@ -51,5 +51,21 @@ Steam Audioは `tools/dependencies.lock.json` のURLとSHA-256で固定します
 ```powershell
 python tools/rust_notices.py docs/third-party
 ```
+
+## 再配布用パッケージ
+
+公開用リポジトリの変更をコミットしてから実行します。
+
+```powershell
+.\tools\build-product.ps1 -Release
+```
+
+OBS向けSteam Audioは `tools/build_steam_audio.py` で固定されたソースと必須依存からビルドします。IPP・MKL・Embree・Radeon Rays・TrueAudio Next・FFTSを無効にし、PFFFTを使います。既存の公式SDK DLLは単体版だけに使用します。
+
+`-Release` はバイナリーと一緒に `virtual-spatial-mic-0.1.0-sources.zip` を生成します。Rust依存ソース、Steam Audioとその必須依存、ビルド変更も含みます。バイナリーと同じダウンロード場所にこのアーカイブを追加料金なしで置き、`SOURCE.txt` を残してください。
+
+対応ソースの展開後は、同梱の `SOURCE-BUILD.txt` を参照してください。Rustはvendored sources、Steam Audioは同梱のソーススナップショットを使って再ビルドできます。ツールチェーンとOBS本体は別途必要です。
+
+IPPなしDLLでのテストは `VSM_TEST_STEAM_AUDIO` にそのDLLの絶対パスを設定して通常のテストを実行します。実機での性能・音声確認は別途行います。
 
 ライセンスの扱いは[依存物とライセンス](dependencies.md)を参照してください。テストで生成した音声、実機の記録、端末固有の設定、アクセス情報はコミットしません。
