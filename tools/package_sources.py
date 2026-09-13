@@ -55,7 +55,11 @@ def main():
         subprocess.run(['cargo', 'vendor', '--locked', '--versioned-dirs', str(stage / 'vendor')],
                        cwd=ROOT, stdout=log, stderr=log, check=True)
     info = {'vsm_commit': commit, 'steam_audio': [], 'rust_sources': 'vendor/'}
-    with zipfile.ZipFile(args.output, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+    partial = args.output.with_suffix(args.output.suffix + '.partial')
+    # Registry tarballs may retain Unix-epoch mtimes, older than ZIP supports.
+    # Publish the final archive name only after every source has been added.
+    with zipfile.ZipFile(partial, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6,
+                         strict_timestamps=False) as archive:
         for name in git('ls-files', '-z').decode().strip('\0').split('\0'):
             archive.writestr(name, git('show', f'HEAD:{name}'))
         archive.writestr('.cargo/config.toml', '[source.crates-io]\nreplace-with = "vendored-sources"\n\n'
@@ -88,6 +92,7 @@ def main():
             'the OBS plugin uses the source-built .deps/steam-audio-open-4.8.1/phonon.dll.\n'
             'Dependency sources retain their original licenses. VSM source files retain MIT,\n'
             'except OBS-derived declarations as described in LICENSES.md.\n')
+    partial.rename(args.output)
     print('Corresponding sources:', args.output)
 
 
