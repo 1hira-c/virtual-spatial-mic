@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,6 +24,12 @@ jobs:
           $cmakeBin = python -c "import cmake; print(cmake.CMAKE_BIN_DIR)"
           $cmakeBin >> $env:GITHUB_PATH
       - run: cmake --version
+      - name: Check Visual Studio 2022 toolchain
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vsInstall = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vsInstall) { throw 'Visual Studio 2022 C++ tools are required.' }
+          Write-Output $vsInstall
       - uses: actions/cache@v4
         with:
           path: |
@@ -31,7 +37,7 @@ jobs:
             ~/.cargo/git
             target
             .deps
-          key: vsm-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/dependencies.lock.json', 'tools/build_steam_audio.py') }}
+          key: vsm-windows2022-cmake3316-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/dependencies.lock.json', 'tools/build_steam_audio.py') }}
       - run: rustup show
       - run: python tools/bootstrap.py
       - run: cargo fmt --all -- --check
