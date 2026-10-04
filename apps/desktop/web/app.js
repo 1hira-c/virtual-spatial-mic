@@ -77,6 +77,15 @@ function updateSaveSummary() {
   el('save-summary').textContent = `${name} · ${raw}`;
   el('save-summary').title = `${root} · ${raw}`;
 }
+function applyObsSettings(o) { el('obs-enabled').checked = !!o.enabled; el('obs-host').value = o.host; el('obs-port').value = o.port; el('obs-password').value = ''; el('obs-password').placeholder = o.password_set ? '変更しない場合は空欄' : '未設定'; }
+const obsLabels = { off: '無効', connecting: '接続中…', connected: '接続済み', auth_failed: 'パスワードが違います', disconnected: '未接続', stopped: '停止' };
+function obsText(o) {
+  const s = o.status || {};
+  let text = obsLabels[s.state] || s.state || '';
+  if (s.state === 'connected') text += o.obs_recording ? ' · OBS録画中' : ' · OBS録画待ち';
+  if (s.error && s.state !== 'auth_failed') text += `：${s.error}`;
+  return text;
+}
 function applyConfig(c) { config = c; el('microphone').value = c.endpoint_id; el('channel').value = c.channel; el('gain').value = c.gain_db; el('gain-value').value = `${c.gain_db} dB`; el('save-raw').checked = c.save_raw; el('output-root').textContent = c.output_root; el('output-root').title = c.output_root; el('monitor-device').value = c.monitor_endpoint; }
 function flushGain() {
   clearTimeout(gainTimer);
@@ -221,10 +230,13 @@ async function poll() {
   el('live-state').classList.toggle('waiting', active && !e.pose_ready);
   setText('input-toggle', active ? '入力を無効にする' : '入力を有効にする');
   el('input-toggle').classList.toggle('active', active);
-  el('record-toggle').disabled = !active;
+  const obs = state.obs_link, obsLinked = obs.status?.state === 'connected';
+  el('record-toggle').disabled = !active || obsLinked;
   setText('record-toggle', recording ? '録音を停止' : '録音を開始');
   el('record-toggle').classList.toggle('recording', recording);
-  el('record-state').textContent = recording ? '録音中' : active ? '待機中 · 直前の音声も保持しています' : '';
+  el('record-state').textContent = recording ? (obsLinked ? '録音中 · OBSの録画に連動' : '録音中') : active ? (obsLinked ? 'OBSの録画開始を待っています · 直前の音声も保持しています' : '待機中 · 直前の音声も保持しています') : '';
+  el('obs-state').textContent = obsText(obs);
+  el('obs-summary').textContent = obs.enabled ? obsText(obs) : '無効';
   el('pose-state').textContent = e.message || '';
   for (const id of ['microphone','channel','save-raw','choose-root']) el(id).disabled = active;
   el('gain').disabled = recording || !!e.gain_locked || recordingPending;
@@ -311,6 +323,10 @@ action('record-toggle', async () => {
   } catch (error) { recordingPending = false; throw error; }
   if (stopping) setTimeout(() => refresh().catch(notice), 900);
 });
+action('obs-save', async () => {
+  await invoke('obs_link_configure', { value: { enabled: el('obs-enabled').checked, host: el('obs-host').value, port: Number(el('obs-port').value), password: el('obs-password').value } });
+  applyObsSettings((await invoke('studio_status')).obs_link);
+});
 action('monitor-toggle', () => invoke('monitor_enable', { enabled: !monitorEnabled, endpoint: el('monitor-device').value }));
 action('choose-root', async () => { const r = await invoke('choose_folder', { purpose: 'recordings' }); if (r?.config) { applyConfig(r.config); rows = []; selected = undefined; await refresh(); } });
 action('open-session', async () => { const r = await invoke('choose_folder', { purpose: 'session' }); if (r?.session) { rows = rows.filter(v => v.directory !== r.session.directory); rows.unshift(r.session); select(r.session); } else if (r?.config) { applyConfig(r.config); await refresh(); } });
@@ -323,7 +339,7 @@ el('gain').addEventListener('input', () => {
   if (!gainTimer) gainTimer = setTimeout(() => flushGain().catch(notice), 50);
 });
 el('save-raw').addEventListener('change', updateSaveSummary);
-for (const id of ['save-settings', 'reprocess-settings']) {
+for (const id of ['save-settings', 'obs-settings', 'reprocess-settings']) {
   const key = `vsm.${id}.open`;
   try { el(id).open = localStorage.getItem(key) === 'true'; } catch { /* Storage may be unavailable. */ }
   el(id).addEventListener('toggle', () => {
@@ -331,5 +347,5 @@ for (const id of ['save-settings', 'reprocess-settings']) {
   });
 }
 el('player').addEventListener('error', () => { if (el('player').src) notice('音声を再生できませんでした。保存場所からWAVを確認できます。'); });
-async function initialize() { await poll(); const devices = await invoke('audio_devices'); for (const [key, id] of [['inputs','microphone'], ['outputs','monitor-device']]) { for (const d of devices[key] || []) { const option = document.createElement('option'); option.value = d.endpoint_id || d.id; option.textContent = `${d.name || d.friendly_name}${d.supported === false ? '（形式未対応）' : ''}`; option.disabled = d.supported === false; el(id).append(option); } } applyConfig(state.config); if (devices.message) notice(devices.message); await refresh(); }
+async function initialize() { await poll(); const devices = await invoke('audio_devices'); for (const [key, id] of [['inputs','microphone'], ['outputs','monitor-device']]) { for (const d of devices[key] || []) { const option = document.createElement('option'); option.value = d.endpoint_id || d.id; option.textContent = `${d.name || d.friendly_name}${d.supported === false ? '（形式未対応）' : ''}`; option.disabled = d.supported === false; el(id).append(option); } } applyConfig(state.config); applyObsSettings(state.obs_link); if (devices.message) notice(devices.message); await refresh(); }
 initialize().catch(notice).finally(() => { setInterval(() => { if (!busy) poll().catch(notice); }, 700); });

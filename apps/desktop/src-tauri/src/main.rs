@@ -15,7 +15,11 @@ use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use vsm_core::{session, wave};
-use vsm_live::{engine::Engine, monitor::Monitor};
+use vsm_live::{
+    engine::Engine,
+    monitor::Monitor,
+    obs_link::{self, ObsLink, ObsLinkConfig, ObsRecording},
+};
 
 struct Render {
     cancel: Arc<AtomicBool>,
@@ -33,13 +37,17 @@ impl Drop for Render {
 struct Studio {
     config: Value,
     settings_path: PathBuf,
-    library: PathBuf,
     fixture: Value,
     engine: Option<Engine>,
     monitor: Arc<Mutex<Option<Monitor>>>,
     render: Option<Render>,
     sessions: HashSet<PathBuf>,
     output_roots: HashSet<PathBuf>,
+    // Kept apart from `config`, which is copied into every take's session.json.
+    obs_settings: Value,
+    obs_settings_path: PathBuf,
+    obs_link: Option<ObsLink>,
+    obs: ObsRecording,
 }
 impl Studio {
     fn authorize(&self, path: &str) -> Result<PathBuf> {
@@ -58,7 +66,13 @@ impl Studio {
             .as_ref()
             .is_some_and(|r| r.worker.as_ref().is_some_and(|w| !w.is_finished()))
     }
+    fn obs_connected(&self) -> bool {
+        self.obs_link
+            .as_ref()
+            .is_some_and(|l| l.status()["state"] == "connected")
+    }
     fn close(&mut self) {
+        self.obs_link.take();
         self.render.take();
         self.engine.take();
         self.monitor.lock().unwrap().take();
@@ -87,8 +101,10 @@ fn plain(path: &Path) -> String {
 fn studio_status(state: State<Shared>) -> CommandResult<Value> {
     let s = state.lock().map_err(err)?;
     let monitor = s.monitor.lock().map_err(err)?;
+    let o = &s.obs_settings;
+    let obs = json!({"enabled":o["enabled"],"host":o["host"],"port":o["port"],"password_set":o["password"]!="","status":s.obs_link.as_ref().map(ObsLink::status).unwrap_or(json!({"state":"off"})),"obs_recording":s.obs.obs_active,"joined":s.obs.joined});
     Ok(
-        json!({"config":s.config,"fixture":s.fixture.is_object(),"engine":s.engine.as_ref().map(Engine::status).unwrap_or(json!({"active":false,"state":"stopped","message":"入力は無効です"})),"monitor":monitor.as_ref().map(Monitor::status).unwrap_or(json!({"ready":false})),"monitor_enabled":monitor.is_some(),"render":s.render.as_ref().map(|r|r.state.lock().unwrap().clone()).unwrap_or(json!({"active":false})),"runtime":"Rust / Tauri"}),
+        json!({"obs_link":obs,"config":s.config,"fixture":s.fixture.is_object(),"engine":s.engine.as_ref().map(Engine::status).unwrap_or(json!({"active":false,"state":"stopped","message":"入力は無効です"})),"monitor":monitor.as_ref().map(Monitor::status).unwrap_or(json!({"ready":false})),"monitor_enabled":monitor.is_some(),"render":s.render.as_ref().map(|r|r.state.lock().unwrap().clone()).unwrap_or(json!({"active":false})),"runtime":"Rust / Tauri"}),
     )
 }
 
@@ -224,7 +240,6 @@ fn input_enable(enabled: bool, state: State<Shared>) -> CommandResult<Value> {
         s.engine = Some(
             Engine::start(
                 cfg,
-                s.library.clone(),
                 Arc::new(move |samples, at| {
                     if let Some(m) = output.lock().unwrap().as_ref() {
                         m.push(samples, at)?;
@@ -234,8 +249,15 @@ fn input_enable(enabled: bool, state: State<Shared>) -> CommandResult<Value> {
             )
             .map_err(err)?,
         );
+        let rows = s.obs.on_engine_started();
+        if let Some(engine) = &s.engine {
+            for row in rows {
+                engine.command(row).map_err(err)?;
+            }
+        }
     } else {
         s.engine.take();
+        s.obs.on_engine_stopped();
         s.monitor.lock().map_err(err)?.take();
     }
     Ok(json!({"enabled":enabled}))
@@ -248,7 +270,62 @@ fn record_control(recording: bool, state: State<Shared>) -> CommandResult<()> {
     if !s.running() {
         return Err("入力が停止しています".into());
     }
+    if s.obs_connected() {
+        return Err("OBS連携中は、OBSの録画開始・停止に合わせて保存します".into());
+    }
     engine.command(json!({"event":if recording{"recording_started"}else{"recording_stopped"},"source":"studio"})).map_err(err)
+}
+
+/// Replaces the running link; call with the Studio lock held. Dropping the old
+/// link only cancels it, and its sink rechecks the token under this lock.
+fn restart_obs_link(app: &tauri::AppHandle, s: &mut Studio) {
+    s.obs_link.take();
+    if s.obs_settings["enabled"] != true {
+        return;
+    }
+    let Ok(config) = ObsLinkConfig::from_settings(&s.obs_settings) else {
+        return;
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let token = cancel.clone();
+    let handle = app.clone();
+    s.obs_link = ObsLink::start(
+        config,
+        cancel,
+        Arc::new(move |signal| {
+            let state = handle.state::<Shared>();
+            let Ok(mut s) = state.lock() else { return };
+            if token.load(Ordering::Relaxed) {
+                return;
+            }
+            let running = s.running();
+            let rows = s.obs.on_signal(&signal, running);
+            if let Some(engine) = &s.engine {
+                for row in rows {
+                    let _ = engine.command(row);
+                }
+            }
+        }),
+    )
+    .ok();
+}
+
+#[tauri::command]
+fn obs_link_configure(
+    mut value: Value,
+    app: tauri::AppHandle,
+    state: State<Shared>,
+) -> CommandResult<()> {
+    let mut s = state.lock().map_err(err)?;
+    // An empty password field keeps the stored password.
+    if value["password"].as_str().is_none_or(str::is_empty) {
+        value["password"] = s.obs_settings["password"].clone();
+    }
+    let value = obs_link::link_settings(&value).map_err(err)?;
+    obs_link::save_link_settings(&s.obs_settings_path, &value).map_err(err)?;
+    s.obs_settings = value;
+    restart_obs_link(&app, &mut s);
+    Ok(())
 }
 
 #[tauri::command]
@@ -275,7 +352,6 @@ fn reprocess_recording(path: String, options: Value, state: State<Shared>) -> Co
     }
     let path = s.authorize(&path).map_err(err)?;
     s.render.take();
-    let library = s.library.clone();
     let cancel = Arc::new(AtomicBool::new(false));
     let progress = Arc::new(Mutex::new(
         json!({"active":true,"progress":0.,"message":"原音を確認しています"}),
@@ -283,7 +359,7 @@ fn reprocess_recording(path: String, options: Value, state: State<Shared>) -> Co
     let stop = cancel.clone();
     let status = progress.clone();
     let worker=thread::Builder::new().name("vsm-reprocess".into()).spawn(move||{
-    let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||session::reprocess(&path,&options,&stop,&library,|p|{*status.lock().unwrap()=json!({"active":true,"progress":p["processed_frames"].as_f64().unwrap_or(0.)/p["total_frames"].as_f64().unwrap_or(1.).max(1.),"message":"再処理しています"});},true)));
+    let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||session::reprocess(&path,&options,&stop,|p|{*status.lock().unwrap()=json!({"active":true,"progress":p["processed_frames"].as_f64().unwrap_or(0.)/p["total_frames"].as_f64().unwrap_or(1.).max(1.),"message":"再処理しています"});},true)));
     *status.lock().unwrap()=match result{Ok(Ok(report))=>json!({"active":false,"progress":1.,"message":"再処理が完了しました","report":report}),Ok(Err(e))=>json!({"active":false,"error":e.to_string(),"cancelled":stop.load(Ordering::Relaxed)}),Err(_)=>json!({"active":false,"error":"再処理スレッドが異常終了しました"})};
 }).map_err(err)?;
     s.render = Some(Render {
@@ -362,7 +438,6 @@ fn reveal_recording(
 fn run() -> Result<()> {
     let mut fixture = Value::Null;
     let mut settings_override = None;
-    let mut library = vsm_core::dsp::packaged_library()?;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -373,9 +448,6 @@ fn run() -> Result<()> {
                 settings_override =
                     Some(PathBuf::from(args.next().context("Missing settings path")?))
             }
-            "--steam-audio" => {
-                library = PathBuf::from(args.next().context("Missing SDK library path")?)
-            }
             _ => anyhow::bail!("Unknown option: {arg}"),
         }
     }
@@ -383,10 +455,16 @@ fn run() -> Result<()> {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
+            // Parse the embedded HRTF before the first input or reprocess needs it.
+            thread::Builder::new()
+                .name("vsm-hrtf".into())
+                .spawn(|| drop(vsm_core::dsp::preload()))?;
             let settings_path = settings_override
                 .clone()
                 .unwrap_or(app.path().app_local_data_dir()?.join("settings.json"));
             let mut config = session::load_settings(&settings_path)?;
+            let obs_settings_path = settings_path.with_file_name("obs-link.json");
+            let obs_settings = obs_link::load_link_settings(&obs_settings_path)?;
             if config["output_root"] == "" {
                 config["output_root"] = json!(plain(
                     &app.path()
@@ -402,14 +480,19 @@ fn run() -> Result<()> {
             app.manage(Mutex::new(Studio {
                 config,
                 settings_path,
-                library: library.clone(),
                 fixture: fixture.clone(),
                 engine: None,
                 monitor: Arc::new(Mutex::new(None)),
                 render: None,
                 sessions: HashSet::new(),
                 output_roots,
+                obs_settings,
+                obs_settings_path,
+                obs_link: None,
+                obs: ObsRecording::default(),
             }));
+            let state = app.state::<Shared>();
+            restart_obs_link(app.handle(), &mut state.lock().unwrap());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -423,6 +506,7 @@ fn run() -> Result<()> {
             input_enable,
             record_control,
             monitor_enable,
+            obs_link_configure,
             reprocess_recording,
             cancel_reprocess,
             recording_audio,

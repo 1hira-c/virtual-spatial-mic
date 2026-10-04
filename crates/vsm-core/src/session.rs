@@ -318,7 +318,6 @@ pub fn reprocess(
     root: &Path,
     options: &Value,
     cancel: &AtomicBool,
-    library: &Path,
     mut progress: impl FnMut(Value),
     publish_latest: bool,
 ) -> Result<Value> {
@@ -382,12 +381,12 @@ pub fn reprocess(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros()
     ));
     fs::create_dir(&folder)?;
-    let mut report = json!({"kind":"rust_session_reprocess","schema_version":1,"status":"processing","runtime":"rust","config":cfg,"input_hashes":hashes,"python_runtime":false,"project_cpp_runtime":false,"offline_equivalent":false,"output":"binaural.wav","camera_policy":"hold_last_received_pose"});
+    let mut report = json!({"kind":"rust_session_reprocess","schema_version":1,"status":"processing","runtime":"rust","config":cfg,"input_hashes":hashes,"python_runtime":false,"project_cpp_runtime":false,"spatializer":crate::dsp::SPATIALIZER,"offline_equivalent":false,"output":"binaural.wav","camera_policy":"hold_last_received_pose"});
     save_json(&folder.join("report.json"), &report)?;
     let result = (|| -> Result<()> {
         let mut output = WaveWriter::create(&folder.join("binaural.wav"), 2)?;
         let mut poses = BufWriter::new(File::create(folder.join("applied-poses.jsonl"))?);
-        let mut processor = Processor::new(&cfg, 0, library, None)?;
+        let mut processor = Processor::new(&cfg, 0, None)?;
         if let Some(db) = options["gain_db"].as_f64() {
             processor.override_gain(db)?;
         }

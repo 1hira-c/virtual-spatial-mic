@@ -2,17 +2,16 @@
 
 | 対象 | 依存物 | 記録 |
 | --- | --- | --- |
-| 音響処理 | Steam Audio 4.8.1 | [Apache-2.0](third-party/Steam-Audio-APACHE-2.0.txt)、[第三者notice](third-party/Steam-Audio-THIRDPARTY.md) |
-| 単体版 | TauriほかのRustクレート | [notice](third-party/rust-studio-NOTICES.txt) |
-| OBSプラグイン | OBS 32.2.2のAPI、Rustクレート | [GPLv3本文](third-party/GPL-3.0.txt)、[OBS由来の表記](third-party/OBS-NOTICE.txt)、[Rust notice](third-party/rust-obs-NOTICES.txt) |
+| 空間処理（HRTFバイノーラル） | [sofar](https://github.com/andreiltd/sofar) 0.3.0（Rustのみ、MIT OR Apache-2.0） | libmysofa由来部分の[BSD 3-Clause](third-party/libmysofa-BSD-3-Clause.txt) |
+| HRTFデータ | SADIE II Database 被験者D1（Neumann KU100、48 kHz） | [Apache-2.0](third-party/Apache-2.0.txt)、[表記と入手元](third-party/SADIE-II-NOTICE.txt) |
+| OBSとの録画連動 | [tungstenite](https://github.com/snapview/tungstenite-rs)（obs-websocket v5のプロトコルで接続） | [Rust notice](third-party/rust-NOTICES.txt) |
+| 単体版 | TauriほかのRustクレート | [Rust notice](third-party/rust-NOTICES.txt)、MPL-2.0分は[本文](third-party/MPL-2.0.txt) |
 | 口追跡モジュール | YL-ATG、Modular Avatar、VRChat Avatars SDK | 座標取得部に[YL-ATGのMITライセンス](../integrations/unity/Assets/VirtualSpatialMic/YL-ATG-LICENSE.txt)。SDKとModular Avatarは別途導入 |
 
-Rustクレートの一覧は [rust-dependencies.json](third-party/rust-dependencies.json) に保存しています。SDKと依存クレートの実体はソースリポジトリに含めず、ビルド時に取得します。WebView2は単体版の実行環境です。
+Rustクレートの一覧は [rust-dependencies.json](third-party/rust-dependencies.json) に保存しています。依存クレートの実体はソースリポジトリに含めず、ビルド時にcargoが取得します。HRTFデータは `crates/vsm-core/assets/hrtf/` に圧縮して保存し、exeに埋め込みます。WebView2は単体版の実行環境です。
 
-VSM独自部分は [MIT License](../LICENSE) です。OBSヘッダー由来の生成定義や第三者コンポーネントには元の条件が適用されます。[ライセンスの適用範囲](../LICENSES.md) を参照してください。
+製品のビルドに必要なのは、RustツールチェーンとMSVCのリンクツール（Windows SDKを含む）だけです。C/C++のライブラリ、CMake、Python、外部SDKのダウンロードは不要です。
 
-単体版の自作部分はMIT、OBSプラグインの組み合わせた生成物はGPL-3.0-onlyで配布します。OBS由来の定義はGPL-2.0-or-laterを保持します。
+VSM独自部分は [MIT License](../LICENSE) です。第三者コンポーネントには元の条件が適用されます。[ライセンスの適用範囲](../LICENSES.md) を参照してください。MPL-2.0のクレートは未改変で、そのソースは配布物と同じ場所のアーカイブから入手できます。アーカイブ名とハッシュは配布物の `SOURCE.txt` を参照してください。
 
-OBS向けSteam Audioは、IPPなどの任意依存を無効にしたソースビルドです。[ビルド条件](third-party/Steam-Audio-OPEN-NOTICE.txt)と[必須依存のライセンス](third-party/Steam-Audio-OPEN-DEPENDENCIES.txt)を同梱します。単体版は公式Steam Audio DLLを使い、その第三者noticeも保持します。
-
-[MPL-2.0本文](third-party/MPL-2.0.txt)に従うRustクレートを含め、依存ソースはバイナリーと同じ場所の対応ソースアーカイブから入手できます。アーカイブ名とハッシュは配布物の `SOURCE.txt` を参照してください。
+OBSの録画開始・停止との連動はobs-websocketのプロトコル（JSON over WebSocket）を使います。音声はWindowsの出力デバイス経由でOBSが取り込みます。OBSのコードやライブラリにはリンクしません。

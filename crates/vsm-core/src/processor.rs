@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 pub struct AudioPacket {
@@ -57,12 +57,7 @@ pub struct Processor {
     source_frames: BTreeMap<String, u64>,
 }
 impl Processor {
-    pub fn new(
-        config: &Value,
-        origin: i64,
-        library: &Path,
-        clock: Option<fn() -> i64>,
-    ) -> Result<Self> {
+    pub fn new(config: &Value, origin: i64, clock: Option<fn() -> i64>) -> Result<Self> {
         let db = config
             .get("gain_db")
             .and_then(Value::as_f64)
@@ -77,7 +72,7 @@ impl Processor {
                 .cloned()
                 .unwrap_or(json!([0., 0.0064, -0.0736])),
         )?;
-        let mut dsp = Binaural::new(library, 256, true)?;
+        let mut dsp = Binaural::new(256, true)?;
         let mut stereo = [0.; 512];
         dsp.process(&[0.; 256], &mut stereo, [0., 0., -1.])?;
         dsp.reset();

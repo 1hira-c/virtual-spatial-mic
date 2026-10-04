@@ -26,14 +26,14 @@ fn close(value: f64, expected: f64) {
 fn gain_events_checkpoints_and_override() -> Result<()> {
     let mut config = session::defaults();
     config["gain_db"] = json!(-30.);
-    let mut p = Processor::new(&config, 0, &common::library(), None)?;
+    let mut p = Processor::new(&config, 0, None)?;
     p.event(json!({"kind":"gain_change","gain_db":-6.,"receive_time_ns":5_000_000}))?;
     close(
         p.push(&packet(0), 0)?[0].pose["gain_db"].as_f64().unwrap(),
         -30.,
     );
     let checkpoint = p.checkpoint();
-    let mut q = Processor::new(&session::defaults(), 0, &common::library(), None)?;
+    let mut q = Processor::new(&session::defaults(), 0, None)?;
     q.restore(&checkpoint)?;
     close(q.checkpoint()["gain_db"].as_f64().unwrap(), -30.);
     let changed = q.push(&packet(256), 0)?;
@@ -42,7 +42,7 @@ fn gain_events_checkpoints_and_override() -> Result<()> {
         changed[0].pose["gain_from_linear"].as_f64().unwrap(),
         10f64.powf(-30. / 20.),
     );
-    let mut restored = Processor::new(&config, 0, &common::library(), None)?;
+    let mut restored = Processor::new(&config, 0, None)?;
     restored.restore(&q.checkpoint())?;
     close(
         restored.push(&packet(512), 0)?[0].pose["gain_db"]
@@ -50,7 +50,7 @@ fn gain_events_checkpoints_and_override() -> Result<()> {
             .unwrap(),
         -6.,
     );
-    let mut fixed = Processor::new(&config, 0, &common::library(), None)?;
+    let mut fixed = Processor::new(&config, 0, None)?;
     fixed.override_gain(-18.)?;
     fixed.restore(&checkpoint)?;
     close(

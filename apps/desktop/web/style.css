@@ -266,7 +266,7 @@ label {
   color: var(--md-outline);
 }
 
-select, input[type="text"] {
+select, input[type="text"], input[type="number"], input[type="password"] {
   width: 100%;
   min-width: 0;
   font: inherit;
@@ -751,6 +751,12 @@ progress {
 .recording-settings > summary:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 4px; border-radius: var(--radius-xs); }
 .recording-settings[open] .disclosure-arrow { transform: rotate(90deg); }
 .recording-settings[open] > summary { margin-bottom: 16px; }
+.obs-fields {
+  display: grid;
+  grid-template-columns: 2fr 1fr 2fr;
+  gap: 14px;
+  margin: 14px 0;
+}
 .output-summary { margin-left: auto; min-width: 0; max-width: 70%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--md-outline); font-size: 11px; }
 .output-controls {
   display: grid;
@@ -815,7 +821,7 @@ progress {
   .library {
     grid-template-columns: 1fr;
   }
-  .reprocess {
+  .reprocess, .obs-fields {
     grid-template-columns: 1fr;
   }
 }

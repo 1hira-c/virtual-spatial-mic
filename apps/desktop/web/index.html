@@ -180,6 +180,31 @@
 
     </details>
 
+    <details class="recording-settings" id="obs-settings">
+      <summary>
+        <svg class="disclosure-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+        <span>OBS連携</span>
+        <span id="obs-summary" class="output-summary"></span>
+      </summary>
+    <div class="save-line">
+      <label class="check">
+        <input type="checkbox" id="obs-enabled">
+        OBSの録画開始・停止に合わせて保存する
+      </label>
+      <span class="hint">OBSのWebSocketサーバーを使用</span>
+    </div>
+    <div class="obs-fields">
+      <label>ホスト<input type="text" id="obs-host" autocomplete="off" spellcheck="false"></label>
+      <label>ポート<input type="number" id="obs-port" min="1" max="65535"></label>
+      <label>パスワード<input type="password" id="obs-password" autocomplete="off" placeholder="変更しない場合は空欄"></label>
+    </div>
+    <div class="actions">
+      <button id="obs-save" class="btn-secondary"><span class="label">接続設定を保存</span></button>
+      <span id="obs-state" class="hint" role="status"></span>
+    </div>
+    <p class="hint">音声はモニター出力を、OBSの「アプリケーション音声キャプチャ」か仮想オーディオケーブル経由で取り込みます。手順は同梱のOBS.mdを参照してください。</p>
+    </details>
+
     <details>
       <summary>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

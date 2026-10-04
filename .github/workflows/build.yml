@@ -14,34 +14,21 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install compatible CMake
-        run: |
-          python -m pip install cmake==3.31.6
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $cmakeBin = python -c "import cmake; print(cmake.CMAKE_BIN_DIR)"
-          $cmakeBin >> $env:GITHUB_PATH
-      - run: cmake --version
-      - name: Check Visual Studio 2022 toolchain
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
-          $vsInstall = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (!$vsInstall) { throw 'Visual Studio 2022 C++ tools are required.' }
-          Write-Output $vsInstall
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-            .deps
-          key: vsm-windows2022-cmake3316-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/dependencies.lock.json', 'tools/build_steam_audio.py') }}
+          key: vsm-windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - run: rustup show
-      - run: python tools/bootstrap.py
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --release --workspace
+      - name: Check third-party notices are current
+        run: |
+          python tools/rust_notices.py docs/third-party
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git diff --exit-code -- docs/third-party
       - run: pwsh tools/build-product.ps1 -OutputDirectory out/product
       - uses: actions/upload-artifact@v4
         with:
@@ -52,9 +39,5 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - run: rustup show
-      - run: python3 tools/bootstrap.py
       - run: cargo test --locked --release -p vsm-core -p vsm-live
