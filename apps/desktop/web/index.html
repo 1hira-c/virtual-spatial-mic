@@ -9,8 +9,34 @@
 </head>
 <body>
 <main>
-  <!-- Live Studio Section -->
-  <section class="card live" aria-labelledby="live-title">
+  <nav id="workspace-tabs" role="tablist" aria-label="収録とライブラリ">
+    <button id="tab-audio" type="button" role="tab" data-workspace="audio" aria-selected="true" aria-controls="audio-panel" tabindex="0">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3m-4 0h8"/></svg>
+      <span>音のみ</span>
+    </button>
+    <button id="tab-video" type="button" role="tab" data-workspace="video" aria-selected="false" aria-controls="video-panel" tabindex="-1">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3Z"/></svg>
+      <span>録画</span>
+    </button>
+    <button id="tab-library" type="button" role="tab" data-workspace="library" aria-selected="false" aria-controls="library-panel" tabindex="-1">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="10" y="4" width="4" height="16" rx="1"/><path d="m17 5 4 14"/></svg>
+      <span>ライブラリ</span>
+    </button>
+  </nav>
+
+  <div id="capture-strip" hidden>
+    <span id="capture-summary" role="status"></span>
+    <div class="capture-actions">
+      <button id="capture-return" type="button" class="btn-secondary"><span class="label">収録へ戻る</span></button>
+      <button id="capture-stop" type="button" class="btn-secondary" hidden>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+        <span class="label">停止</span>
+      </button>
+    </div>
+  </div>
+
+  <div id="audio-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-audio">
+  <section id="live-panel" class="card live" aria-labelledby="live-title">
     <div class="section-head">
       <div class="section-title-group">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -20,7 +46,7 @@
           <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
           <path d="M4.93 19.07a10 10 0 0 1 0-14.14"/>
         </svg>
-        <h2 id="live-title">ライブ収録</h2>
+        <h2 id="live-title">音声収録</h2>
       </div>
       <div class="status-group" style="display: flex; gap: 8px; align-items: center;">
         <span class="status-pill" id="runtime" hidden>
@@ -80,9 +106,9 @@
 
     </div>
 
-    <div class="video-settings" role="group" aria-label="動画入力">
+    <div id="video-settings" class="video-settings" role="group" aria-label="動画入力" hidden>
+      <input type="checkbox" id="video-enabled" hidden>
       <div class="video-heading">
-        <label class="check"><input type="checkbox" id="video-enabled">動画も録る</label>
         <span id="video-state" class="hint" role="status"></span>
       </div>
       <div id="video-options" hidden>
@@ -243,9 +269,11 @@
       <p class="hint" style="margin-top: 8px;">カメラ位置は最後に受信した値を維持します。入力待機中の生データはメモリ内に保持し、録音開始時に直前の分も保存します。</p>
     </details>
   </section>
+  </div>
 
-  <!-- Library Section -->
-  <section class="card" aria-labelledby="recordings-title">
+  <div id="video-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-video" hidden></div>
+
+  <section id="library-panel" class="card workspace-panel" role="tabpanel" aria-labelledby="tab-library" hidden>
     <div class="section-head">
       <div class="section-title-group">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

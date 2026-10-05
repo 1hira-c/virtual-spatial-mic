@@ -108,16 +108,6 @@ body {
   flex-direction: column;
 }
 
-/* Main Layout */
-main {
-  max-width: 1240px;
-  width: 100%;
-  margin: 0 auto;
-  padding: 16px 20px 20px;
-  display: grid;
-  gap: 16px;
-  flex: 1;
-}
 
 .status-pill {
   display: inline-flex;
@@ -191,11 +181,68 @@ main {
   max-width: 1240px;
   width: 100%;
   margin: 0 auto;
-  padding: 20px 28px;
+  padding: 16px 20px 20px;
   display: grid;
-  gap: 20px;
+  align-content: start;
+  gap: 16px;
   flex: 1;
 }
+
+/* Workspace tabs */
+#workspace-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--md-surface);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+#workspace-tabs > button {
+  padding: 10px 16px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--md-on-surface-variant);
+}
+#workspace-tabs > button:hover:enabled {
+  background: var(--md-surface-container);
+  border-color: var(--md-outline-variant);
+}
+#workspace-tabs > button[aria-selected="true"] {
+  background: var(--md-surface-container-high);
+  border-color: var(--md-outline-variant);
+  color: var(--md-on-surface);
+}
+#workspace-tabs > button[data-recording]::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--studio-rec);
+}
+.workspace-panel { min-width: 0; }
+#capture-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--radius-sm);
+  background: var(--md-surface-container);
+}
+#capture-summary {
+  min-width: 0;
+  color: var(--md-on-surface-variant);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.capture-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.capture-actions > button { padding: 6px 10px; }
+#live-panel > .section-head { margin-bottom: 16px; padding-bottom: 10px; }
+#live-panel h2 { font-size: 13px; color: var(--md-on-surface-variant); }
 
 /* Studio Cards / Panels */
 .card {
@@ -602,7 +649,7 @@ summary:hover {
 
 #recordings {
   min-width: 0;
-  max-height: 440px;
+  max-height: min(64vh, 640px);
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 6px;
@@ -839,4 +886,13 @@ progress {
   .reprocess, .obs-fields {
     grid-template-columns: 1fr;
   }
+}
+
+@media (max-width: 520px) {
+  main { padding: 12px; gap: 12px; }
+  #workspace-tabs { gap: 6px; }
+  #capture-strip { flex-wrap: wrap; }
+  #workspace-tabs > button { flex: 1; padding: 9px 10px; gap: 6px; }
+  .card { padding: 16px; }
+  #library-panel .section-head { align-items: flex-start; flex-wrap: wrap; }
 }
