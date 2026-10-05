@@ -262,9 +262,10 @@ impl VideoRecording {
         }
         out
     }
-    pub fn preview_image(&self) -> Value {
-        let frame = self
-            .recorder
+    /// Clone the latest immutable BGRA frame while briefly holding only its
+    /// pointer lock. BMP resizing/encoding happens after the Studio lock drops.
+    pub fn preview_frame(&self) -> Option<VideoFrame> {
+        self.recorder
             .as_ref()
             .and_then(Recorder::latest_frame)
             .or_else(|| {
@@ -272,20 +273,30 @@ impl VideoRecording {
                     .as_ref()
                     .filter(|p| p.status().active)
                     .and_then(Preview::latest_frame)
-            });
-        frame.as_ref().and_then(thumbnail).unwrap_or(Value::Null)
+            })
     }
 }
 
-fn thumbnail(frame: &VideoFrame) -> Option<Value> {
-    if frame.width == 0
-        || frame.height == 0
-        || frame.bgra.len() != frame.width as usize * frame.height as usize * 4
-    {
+pub fn thumbnail(frame: &VideoFrame) -> Option<Value> {
+    let expected = (frame.width as usize)
+        .checked_mul(frame.height as usize)?
+        .checked_mul(4)?;
+    if frame.width == 0 || frame.height == 0 || frame.bgra.len() != expected {
         return None;
     }
-    let width = frame.width.min(320) as usize;
-    let height = (frame.height as usize * width / frame.width as usize).max(1);
+    const MAX_EDGE: u32 = 960;
+    let edge = frame.width.max(frame.height);
+    let dimension = |value: u32| {
+        if edge <= MAX_EDGE {
+            value as usize
+        } else {
+            // Round to the nearest pixel, retaining the aspect ratio in both
+            // portrait and landscape. Native small frames are never enlarged.
+            ((value as u64 * MAX_EDGE as u64 + edge as u64 / 2) / edge as u64).max(1) as usize
+        }
+    };
+    let width = dimension(frame.width);
+    let height = dimension(frame.height);
     let stride = (width * 3 + 3) & !3;
     let length = 54 + stride * height;
     let mut bytes = vec![0u8; length];
@@ -331,5 +342,105 @@ mod tests {
         assert_eq!(&bytes[54..62], &[1, 2, 3, 4, 5, 6, 0, 0]);
         assert_eq!(&bytes[62..70], &[7, 8, 9, 10, 11, 12, 0, 0]);
         assert_eq!(i32::from_le_bytes(bytes[22..26].try_into().unwrap()), -2);
+    }
+
+    fn solid_frame(width: u32, height: u32) -> VideoFrame {
+        VideoFrame {
+            width,
+            height,
+            qpc_ns: 0,
+            bgra: Arc::new([23, 47, 91, 255].repeat(width as usize * height as usize)),
+        }
+    }
+
+    #[test]
+    fn thumbnail_caps_long_edge_without_upscaling_or_distorting_orientation() {
+        for (width, height, expected_width, expected_height) in [
+            (1920, 1080, 960, 540),
+            (1080, 1920, 540, 960),
+            (3840, 2160, 960, 540),
+            (640, 360, 640, 360),
+            (360, 640, 360, 640),
+            (960, 960, 960, 960),
+            (1001, 563, 960, 540),
+        ] {
+            let frame = solid_frame(width, height);
+            let shared = frame.bgra.clone();
+            let image = thumbnail(&frame).unwrap();
+            assert_eq!(image["width"], expected_width);
+            assert_eq!(image["height"], expected_height);
+            assert!(Arc::ptr_eq(&frame.bgra, &shared));
+            let bytes = STANDARD
+                .decode(image["bmp_base64"].as_str().unwrap())
+                .unwrap();
+            let stride = (expected_width as usize * 3 + 3) & !3;
+            assert_eq!(bytes.len(), 54 + stride * expected_height as usize);
+            assert_eq!(
+                u32::from_le_bytes(bytes[2..6].try_into().unwrap()) as usize,
+                bytes.len()
+            );
+            assert_eq!(
+                i32::from_le_bytes(bytes[18..22].try_into().unwrap()),
+                expected_width
+            );
+            assert_eq!(
+                i32::from_le_bytes(bytes[22..26].try_into().unwrap()),
+                -expected_height
+            );
+            assert_eq!(&bytes[54..57], &[23, 47, 91]);
+            let last =
+                54 + (expected_height as usize - 1) * stride + (expected_width as usize - 1) * 3;
+            assert_eq!(&bytes[last..last + 3], &[23, 47, 91]);
+        }
+    }
+
+    #[test]
+    fn thumbnail_samples_scaled_coordinates_and_rejects_invalid_frames() {
+        let mut frame = solid_frame(1920, 2);
+        let pixels = Arc::make_mut(&mut frame.bgra);
+        pixels[0..4].copy_from_slice(&[1, 2, 3, 255]);
+        pixels[1918 * 4..1918 * 4 + 4].copy_from_slice(&[4, 5, 6, 255]);
+        let image = thumbnail(&frame).unwrap();
+        assert_eq!(image["width"], 960);
+        assert_eq!(image["height"], 1);
+        let bytes = STANDARD
+            .decode(image["bmp_base64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(&bytes[54..57], &[1, 2, 3]);
+        assert_eq!(&bytes[54 + 959 * 3..54 + 960 * 3], &[4, 5, 6]);
+        for (width, height, pixels) in [
+            (0, 3, vec![]),
+            (2, 2, vec![0; 15]),
+            (u32::MAX, u32::MAX, vec![]),
+        ] {
+            assert!(
+                thumbnail(&VideoFrame {
+                    width,
+                    height,
+                    qpc_ns: 0,
+                    bgra: Arc::new(pixels)
+                })
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "Developer performance diagnostic; timings are not a correctness threshold"]
+    fn thumbnail_960_preview_cost() {
+        let frame = solid_frame(1920, 1080);
+        let before = std::time::Instant::now();
+        let mut bytes = 0;
+        for _ in 0..80 {
+            let image = std::hint::black_box(thumbnail(std::hint::black_box(&frame)).unwrap());
+            bytes = image["bmp_base64"].as_str().unwrap().len();
+        }
+        let elapsed = before.elapsed();
+        eprintln!(
+            "960×540 thumbnail+base64: {:?}/frame, {} encoded bytes/frame, {} encoded bytes/second at 4 fps",
+            elapsed / 80,
+            bytes,
+            bytes * 4
+        );
     }
 }

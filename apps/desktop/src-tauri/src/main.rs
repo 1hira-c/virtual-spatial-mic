@@ -351,7 +351,11 @@ async fn video_configure(value: Value, app: tauri::AppHandle) -> CommandResult<V
 
 #[tauri::command]
 fn video_preview(state: State<Shared>) -> CommandResult<Value> {
-    Ok(state.lock().map_err(err)?.video.preview_image())
+    let frame = state.lock().map_err(err)?.video.preview_frame();
+    Ok(frame
+        .as_ref()
+        .and_then(video::thumbnail)
+        .unwrap_or(Value::Null))
 }
 
 #[tauri::command]
