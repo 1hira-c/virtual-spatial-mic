@@ -183,7 +183,7 @@ main {
   margin: 0 auto;
   padding: 16px 20px 20px;
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
   align-items: start;
   gap: 16px;
   flex: 1;
@@ -200,22 +200,47 @@ main {
   position: sticky;
   top: 16px;
   align-self: start;
+  justify-self: start;
   z-index: 5;
+  width: 72px;
+  min-width: 0;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--md-surface);
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
-  min-width: 0;
+  gap: 8px;
 }
 #workspace-tabs > button {
-  justify-content: flex-start;
-  gap: 10px;
-  padding: 11px 12px;
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
   border-color: transparent;
   background: transparent;
   color: var(--md-on-surface-variant);
 }
+#workspace-tabs > button > svg { width: 20px; height: 20px; }
+#workspace-tabs > button > span { display: none; }
+#workspace-tabs:hover,
+#workspace-tabs:has(button:focus-visible) {
+  width: 176px;
+  border-color: var(--md-outline-variant);
+}
+#workspace-tabs:hover > button,
+#workspace-tabs:has(button:focus-visible) > button {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 12px;
+}
+#workspace-tabs:hover > button > span,
+#workspace-tabs:has(button:focus-visible) > button > span { display: inline; }
 #workspace-tabs > button:hover:enabled {
   background: var(--md-surface-container);
   border-color: var(--md-outline-variant);
@@ -228,11 +253,12 @@ main {
 }
 #workspace-tabs > button[data-recording]::after {
   content: '';
+  position: absolute;
+  top: 7px;
+  right: 7px;
   width: 6px;
   height: 6px;
-  flex: 0 0 auto;
   border-radius: 50%;
-  margin-left: auto;
   background: var(--studio-rec);
 }
 .workspace-panel { min-width: 0; }
@@ -902,10 +928,9 @@ progress {
 }
 
 @media (max-width: 680px) {
-  main { grid-template-columns: 132px minmax(0, 1fr); padding: 12px; gap: 12px; }
+  main { grid-template-columns: 72px minmax(0, 1fr); padding: 12px; gap: 12px; }
   .workspace-content { gap: 12px; }
   #workspace-tabs { top: 12px; }
-  #workspace-tabs > button { padding: 10px; gap: 8px; font-size: 12px; }
   #capture-strip { flex-wrap: wrap; }
   .card { padding: 16px; }
   .section-head { align-items: flex-start; flex-wrap: wrap; }
