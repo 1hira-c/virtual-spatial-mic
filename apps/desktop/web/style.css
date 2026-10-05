@@ -183,24 +183,35 @@ main {
   margin: 0 auto;
   padding: 16px 20px 20px;
   display: grid;
-  align-content: start;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: start;
   gap: 16px;
   flex: 1;
 }
+.workspace-content {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-width: 0;
+}
 
-/* Workspace tabs */
+/* Workspace navigation */
 #workspace-tabs {
   position: sticky;
-  top: 0;
+  top: 16px;
+  align-self: start;
   z-index: 5;
   background: var(--md-surface);
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   min-width: 0;
 }
 #workspace-tabs > button {
-  padding: 10px 16px;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
   border-color: transparent;
   background: transparent;
   color: var(--md-on-surface-variant);
@@ -220,6 +231,7 @@ main {
   height: 6px;
   flex: 0 0 auto;
   border-radius: 50%;
+  margin-left: auto;
   background: var(--studio-rec);
 }
 .workspace-panel { min-width: 0; }
@@ -643,7 +655,7 @@ summary:hover {
 /* Library Section */
 .library {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 30%) minmax(0, 1fr);
   gap: 20px;
 }
 
@@ -888,11 +900,15 @@ progress {
   }
 }
 
-@media (max-width: 520px) {
-  main { padding: 12px; gap: 12px; }
-  #workspace-tabs { gap: 6px; }
+@media (max-width: 680px) {
+  main { grid-template-columns: 132px minmax(0, 1fr); padding: 12px; gap: 12px; }
+  .workspace-content { gap: 12px; }
+  #workspace-tabs { top: 12px; }
+  #workspace-tabs > button { padding: 10px; gap: 8px; font-size: 12px; }
   #capture-strip { flex-wrap: wrap; }
-  #workspace-tabs > button { flex: 1; padding: 9px 10px; gap: 6px; }
   .card { padding: 16px; }
-  #library-panel .section-head { align-items: flex-start; flex-wrap: wrap; }
+  .section-head { align-items: flex-start; flex-wrap: wrap; }
+  .output-controls { grid-template-columns: 1fr; gap: 16px; }
+  .video-source-line { flex-wrap: wrap; }
+  .video-source-line label { flex-basis: 100%; }
 }

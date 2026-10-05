@@ -552,11 +552,11 @@ el('capture-return').addEventListener('click', () => switchWorkspace(captureWork
 for (const name of workspaceNames) {
   el(`tab-${name}`).addEventListener('click', () => switchWorkspace(name));
   el(`tab-${name}`).addEventListener('keydown', async event => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     const available = workspaceNames.filter(value => !el(`tab-${value}`).disabled);
     const index = available.indexOf(name);
-    const next = event.key === 'Home' ? available[0] : event.key === 'End' ? available.at(-1) : available[(index + (event.key === 'ArrowRight' ? 1 : -1) + available.length) % available.length];
+    const next = event.key === 'Home' ? available[0] : event.key === 'End' ? available.at(-1) : available[(index + (event.key === 'ArrowDown' ? 1 : -1) + available.length) % available.length];
     if (!next) return;
     el(`tab-${next}`).focus();
     await switchWorkspace(next);

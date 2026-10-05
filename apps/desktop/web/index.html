@@ -9,7 +9,7 @@
 </head>
 <body>
 <main>
-  <nav id="workspace-tabs" role="tablist" aria-label="収録とライブラリ">
+  <nav id="workspace-tabs" role="tablist" aria-label="収録とライブラリ" aria-orientation="vertical">
     <button id="tab-audio" type="button" role="tab" data-workspace="audio" aria-selected="true" aria-controls="audio-panel" tabindex="0">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3m-4 0h8"/></svg>
       <span>音のみ</span>
@@ -24,6 +24,7 @@
     </button>
   </nav>
 
+  <div class="workspace-content">
   <div id="capture-strip" hidden>
     <span id="capture-summary" role="status"></span>
     <div class="capture-actions">
@@ -400,6 +401,7 @@
   </section>
 
   <p id="notice" role="alert" hidden></p>
+  </div>
 </main>
 </body>
 </html>
