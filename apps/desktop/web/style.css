@@ -220,7 +220,8 @@ main {
   background: var(--md-surface-container);
   border-color: var(--md-outline-variant);
 }
-#workspace-tabs > button[aria-selected="true"] {
+#workspace-tabs > button[aria-selected="true"],
+#workspace-tabs > button[aria-selected="true"]:hover:enabled {
   background: var(--md-surface-container-high);
   border-color: var(--md-outline-variant);
   color: var(--md-on-surface);
