@@ -1,0 +1,31 @@
+Spout2 reference implementation notice
+
+Project: Spout2
+Author: Lynn Jarvis (Leading Edge)
+Repository: https://github.com/leadedge/Spout2
+Reference commit: c2bcc12147711d12ace7d5f08e869d774d840f8a
+License: BSD-2-Clause
+License source: https://raw.githubusercontent.com/leadedge/Spout2/c2bcc12147711d12ace7d5f08e869d774d840f8a/LICENSE
+
+The official LICENSE states:
+Copyright (c) 2020-2024, Lynn Jarvis
+All rights reserved.
+
+The referenced sender management and shared-memory source files also retain:
+Copyright (c) 2014-2025, Lynn Jarvis. All rights reserved.
+Copyright (c) 2019-2025. Lynn Jarvis. All rights reserved. (frame counter)
+
+VSM implements Spout-compatible sender discovery and Direct3D 11 shared-texture
+reception in Rust using the Windows APIs. The Spout2 implementation was used
+as a reference for the shared-memory layout, object names, and synchronization
+protocol. VSM does not link to or distribute the Spout SDK C++ library or DLL.
+The reference implementation's copyright, license conditions, and disclaimer
+are preserved in Spout-BSD-2-Clause.txt.
+
+Reference files at the commit above:
+SPOUTSDK/SpoutGL/SpoutSenderNames.h
+SPOUTSDK/SpoutGL/SpoutSenderNames.cpp
+SPOUTSDK/SpoutGL/SpoutSharedMemory.cpp
+SPOUTSDK/SpoutGL/SpoutFrameCount.cpp
+SPOUTSDK/SpoutGL/SpoutDirectX.cpp
+SPOUTSDK/SpoutDirectX/SpoutDX/SpoutDX.cpp

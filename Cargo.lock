@@ -4521,6 +4521,9 @@ name = "vsm-studio"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "fs2",
  "serde_json",
  "tauri",
  "tauri-build",
@@ -4528,6 +4531,16 @@ dependencies = [
  "tauri-plugin-opener",
  "vsm-core",
  "vsm-live",
+ "vsm-video",
+]
+
+[[package]]
+name = "vsm-video"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "windows",
 ]
 
 [[package]]

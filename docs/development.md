@@ -26,6 +26,7 @@ cargo test --locked --release -p vsm-live loopback_transport_and_query_discovery
 | --- | --- |
 | `crates/vsm-core` | 座標処理、HRTFバイノーラル処理（sofar）、WAV、保存記録の再処理 |
 | `crates/vsm-live` | WASAPI入力・出力、OSCQuery・OSC受信、リングバッファと記録、obs-websocket連動 |
+| `crates/vsm-video` | WindowsのSpout受信、映像プレビュー、Media FoundationのMP4録画 |
 | `apps/desktop` | Rust/Tauriの単体版と静的HTML・CSS・JavaScript |
 | `integrations/unity` | 口追跡モジュールのアセットと導入資料 |
 

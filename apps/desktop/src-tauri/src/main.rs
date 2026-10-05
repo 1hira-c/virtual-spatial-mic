@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod video;
+
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -48,6 +50,7 @@ struct Studio {
     obs_settings_path: PathBuf,
     obs_link: Option<ObsLink>,
     obs: ObsRecording,
+    video: video::VideoRecording,
 }
 impl Studio {
     fn authorize(&self, path: &str) -> Result<PathBuf> {
@@ -71,8 +74,18 @@ impl Studio {
             .as_ref()
             .is_some_and(|l| l.status()["state"] == "connected")
     }
+    fn stop_video(&mut self, cutoff: i64) -> Result<()> {
+        if !self.video.recording() {
+            return Ok(());
+        }
+        let command = self.engine.as_ref().map(|engine| engine.command(json!({"event":"recording_stopped","source":"studio","qpc_ns":cutoff,"video_path":"video.mp4","stop_reason":"standalone_video_stopped"}))).transpose();
+        let finalized = self.video.finish(cutoff);
+        finalized?;
+        command.map(|_| ())
+    }
     fn close(&mut self) {
         self.obs_link.take();
+        let _ = self.stop_video(vsm_live::clock::now_ns());
         self.render.take();
         self.engine.take();
         self.monitor.lock().unwrap().take();
@@ -99,12 +112,21 @@ fn plain(path: &Path) -> String {
 
 #[tauri::command]
 fn studio_status(state: State<Shared>) -> CommandResult<Value> {
-    let s = state.lock().map_err(err)?;
+    let mut s = state.lock().map_err(err)?;
+    if s.video.recording()
+        && (!s.running()
+            || s.video.failed()
+            || s.engine
+                .as_ref()
+                .is_some_and(|e| e.status()["archive_state"] == "failed"))
+    {
+        let _ = s.stop_video(vsm_live::clock::now_ns());
+    }
     let monitor = s.monitor.lock().map_err(err)?;
     let o = &s.obs_settings;
     let obs = json!({"enabled":o["enabled"],"host":o["host"],"port":o["port"],"password_set":o["password"]!="","status":s.obs_link.as_ref().map(ObsLink::status).unwrap_or(json!({"state":"off"})),"obs_recording":s.obs.obs_active,"joined":s.obs.joined});
     Ok(
-        json!({"obs_link":obs,"config":s.config,"fixture":s.fixture.is_object(),"engine":s.engine.as_ref().map(Engine::status).unwrap_or(json!({"active":false,"state":"stopped","message":"入力は無効です"})),"monitor":monitor.as_ref().map(Monitor::status).unwrap_or(json!({"ready":false})),"monitor_enabled":monitor.is_some(),"render":s.render.as_ref().map(|r|r.state.lock().unwrap().clone()).unwrap_or(json!({"active":false})),"runtime":"Rust / Tauri"}),
+        json!({"video":s.video.status(),"obs_link":obs,"config":s.config,"fixture":s.fixture.is_object(),"engine":s.engine.as_ref().map(Engine::status).unwrap_or(json!({"active":false,"state":"stopped","message":"入力は無効です"})),"monitor":monitor.as_ref().map(Monitor::status).unwrap_or(json!({"ready":false})),"monitor_enabled":monitor.is_some(),"render":s.render.as_ref().map(|r|r.state.lock().unwrap().clone()).unwrap_or(json!({"active":false})),"runtime":"Rust / Tauri"}),
     )
 }
 
@@ -237,10 +259,12 @@ fn input_enable(enabled: bool, state: State<Shared>) -> CommandResult<Value> {
             return Err("マイクを選んでください".into());
         }
         let output = s.monitor.clone();
+        let video_output = s.video.audio_output();
         s.engine = Some(
             Engine::start(
                 cfg,
                 Arc::new(move |samples, at| {
+                    video_output(samples, at);
                     if let Some(m) = output.lock().unwrap().as_ref() {
                         m.push(samples, at)?;
                     }
@@ -256,6 +280,7 @@ fn input_enable(enabled: bool, state: State<Shared>) -> CommandResult<Value> {
             }
         }
     } else {
+        let _ = s.stop_video(vsm_live::clock::now_ns());
         s.engine.take();
         s.obs.on_engine_stopped();
         s.monitor.lock().map_err(err)?.take();
@@ -264,16 +289,81 @@ fn input_enable(enabled: bool, state: State<Shared>) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-fn record_control(recording: bool, state: State<Shared>) -> CommandResult<()> {
-    let s = state.lock().map_err(err)?;
-    let engine = s.engine.as_ref().ok_or("先に入力を有効にしてください")?;
-    if !s.running() {
-        return Err("入力が停止しています".into());
-    }
-    if s.obs_connected() {
-        return Err("OBS連携中は、OBSの録画開始・停止に合わせて保存します".into());
-    }
-    engine.command(json!({"event":if recording{"recording_started"}else{"recording_stopped"},"source":"studio"})).map_err(err)
+async fn record_control(recording: bool, app: tauri::AppHandle) -> CommandResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Shared>();
+        let mut s = state.lock().map_err(err)?;
+        let at = vsm_live::clock::now_ns();
+        if !recording && s.video.recording() { return s.stop_video(at).map_err(err); }
+        if s.obs_connected() { return Err("OBS連携中は、OBSの録画開始・停止に合わせて保存します".into()); }
+        if recording && s.video.enabled() && s.obs_settings["enabled"] == true {
+            return Err("単体で動画を録るときは、OBS連携をOFFにしてください".into());
+        }
+        if !s.running() { return Err("先に入力を有効にしてください".into()); }
+        if recording && s.video.enabled() {
+            if s.engine.as_ref().unwrap().status()["recording"] == true { return Ok(()); }
+            let root = PathBuf::from(s.config["output_root"].as_str().unwrap());
+            let started = s.video.begin(&root).map_err(err)?;
+            let name = s.video.recording_name();
+            if let Err(e) = s.engine.as_ref().unwrap().command(json!({"event":"recording_started","source":"studio","qpc_ns":started,"recording_name":name,"video_path":"video.mp4"})) {
+                let _ = s.video.finish(vsm_live::clock::now_ns());
+                return Err(err(e));
+            }
+            return Ok(());
+        }
+        s.engine.as_ref().unwrap().command(json!({"event":if recording{"recording_started"}else{"recording_stopped"},"source":"studio","qpc_ns":at})).map_err(err)
+    }).await.map_err(err)?
+}
+
+#[tauri::command]
+async fn video_sources(app: tauri::AppHandle) -> CommandResult<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let sources = vsm_video::list_senders().map_err(err)?;
+        app.state::<Shared>()
+            .lock()
+            .map_err(err)?
+            .video
+            .retry_preview();
+        Ok(json!({"sources":sources,"synthetic_allowed":true}))
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+async fn video_configure(value: Value, app: tauri::AppHandle) -> CommandResult<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Shared>();
+        let mut s = state.lock().map_err(err)?;
+        if s.engine
+            .as_ref()
+            .is_some_and(|e| e.status()["gain_locked"] == true)
+            || s.video.recording()
+        {
+            return Err("収録中・保存中は映像設定を変更できません".into());
+        }
+        s.video.configure(&value).map_err(err)?;
+        Ok(s.video.status())
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+fn video_preview(state: State<Shared>) -> CommandResult<Value> {
+    Ok(state.lock().map_err(err)?.video.preview_image())
+}
+
+#[tauri::command]
+fn recording_video(
+    path: String,
+    app: tauri::AppHandle,
+    state: State<Shared>,
+) -> CommandResult<String> {
+    let root = state.lock().map_err(err)?.authorize(&path).map_err(err)?;
+    let video = session::video_path(&root).map_err(err)?;
+    app.asset_protocol_scope().allow_file(&video).map_err(err)?;
+    Ok(plain(&video))
 }
 
 /// Replaces the running link; call with the Studio lock held. Dropping the old
@@ -295,7 +385,7 @@ fn restart_obs_link(app: &tauri::AppHandle, s: &mut Studio) {
         Arc::new(move |signal| {
             let state = handle.state::<Shared>();
             let Ok(mut s) = state.lock() else { return };
-            if token.load(Ordering::Relaxed) {
+            if token.load(Ordering::Relaxed) || s.video.recording() {
                 return;
             }
             let running = s.running();
@@ -317,6 +407,9 @@ fn obs_link_configure(
     state: State<Shared>,
 ) -> CommandResult<()> {
     let mut s = state.lock().map_err(err)?;
+    if s.video.recording() {
+        return Err("録画を停止してからOBS連携を変更してください".into());
+    }
     // An empty password field keeps the stored password.
     if value["password"].as_str().is_none_or(str::is_empty) {
         value["password"] = s.obs_settings["password"].clone();
@@ -465,6 +558,7 @@ fn run() -> Result<()> {
             let mut config = session::load_settings(&settings_path)?;
             let obs_settings_path = settings_path.with_file_name("obs-link.json");
             let obs_settings = obs_link::load_link_settings(&obs_settings_path)?;
+            let video = video::VideoRecording::load(settings_path.with_file_name("video.json"))?;
             if config["output_root"] == "" {
                 config["output_root"] = json!(plain(
                     &app.path()
@@ -490,6 +584,7 @@ fn run() -> Result<()> {
                 obs_settings_path,
                 obs_link: None,
                 obs: ObsRecording::default(),
+                video,
             }));
             let state = app.state::<Shared>();
             restart_obs_link(app.handle(), &mut state.lock().unwrap());
@@ -505,6 +600,10 @@ fn run() -> Result<()> {
             recordings,
             input_enable,
             record_control,
+            video_sources,
+            video_configure,
+            video_preview,
+            recording_video,
             monitor_enable,
             obs_link_configure,
             reprocess_recording,

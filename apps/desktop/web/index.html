@@ -80,6 +80,33 @@
 
     </div>
 
+    <div class="video-settings" role="group" aria-label="動画入力">
+      <div class="video-heading">
+        <label class="check"><input type="checkbox" id="video-enabled">動画も録る</label>
+        <span id="video-state" class="hint" role="status"></span>
+      </div>
+      <div id="video-options" hidden>
+        <div class="video-source-line">
+          <label for="video-source" class="field-label">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3Z"/></svg>
+            Spout映像
+          </label>
+          <select id="video-source" aria-label="Spout映像"><option value="">映像を選んでください</option></select>
+          <button id="video-refresh" class="btn-icon-only" title="映像一覧を更新" aria-label="映像一覧を更新">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+          </button>
+        </div>
+        <p class="hint video-audio-hint">音声は処理済みマイクのみ（ワールド・システム音は含みません）。</p>
+        <details id="video-preview-settings">
+          <summary><svg class="disclosure-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>映像プレビュー</summary>
+          <div class="video-preview-box">
+            <img id="video-preview" alt="選択中のSpout映像" hidden>
+            <p id="video-preview-hint" class="hint">映像を待っています…</p>
+          </div>
+        </details>
+      </div>
+    </div>
+
     <div class="input-controls">
     <div class="actions">
       <button id="input-toggle" class="btn-secondary">
@@ -226,7 +253,7 @@
         </svg>
         <div>
           <h2 id="recordings-title">録音ライブラリ</h2>
-          <p class="hint">バイノーラル処理音声をプレビュー / 原音から音量・位置パラメータを再計算</p>
+          <p class="hint">音声・動画を確認 / 原音から再処理</p>
         </div>
       </div>
       <div class="actions">
@@ -273,6 +300,10 @@
         <p id="selected-info" class="hint">録音停止後は、すぐに処理済み音声を聴けます。</p>
 
         <div class="actions">
+          <button id="play-video" hidden disabled class="btn-secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3Z"/></svg>
+            <span>動画</span>
+          </button>
           <button id="play-processed" disabled class="btn-primary">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <polygon points="6 3 20 12 6 21 6 3"/>
@@ -294,6 +325,7 @@
 
         <p id="playing" class="hint"></p>
         <audio id="player" controls preload="metadata"></audio>
+        <video id="video-player" controls playsinline preload="metadata" hidden></video>
 
         <details class="recording-settings" id="reprocess-settings">
           <summary>

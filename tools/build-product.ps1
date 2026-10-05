@@ -34,7 +34,7 @@ try {
     (Get-Content -LiteralPath LICENSES.md -Raw).Replace('](docs/third-party/', '](licenses/') | Set-Content -LiteralPath (Join-Path $app 'LICENSES.md') -Encoding utf8
     Copy-Item -LiteralPath docs/studio.md -Destination (Join-Path $app 'README.md')
     Copy-Item -LiteralPath docs/obs-live.md -Destination (Join-Path $app 'OBS.md')
-    foreach ($file in @('rust-NOTICES.txt','rust-dependencies.json','MPL-2.0.txt','Apache-2.0.txt','SADIE-II-NOTICE.txt','libmysofa-BSD-3-Clause.txt')) {
+    foreach ($file in @('rust-NOTICES.txt','rust-dependencies.json','MPL-2.0.txt','Apache-2.0.txt','SADIE-II-NOTICE.txt','libmysofa-BSD-3-Clause.txt','Spout-BSD-2-Clause.txt','Spout-NOTICE.txt')) {
         Copy-Item -LiteralPath (Join-Path 'docs/third-party' $file) -Destination $licenses
     }
     $commit = git -c ("safe.directory=" + $project) rev-parse --verify --quiet HEAD

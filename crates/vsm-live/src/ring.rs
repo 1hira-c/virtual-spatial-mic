@@ -541,7 +541,20 @@ impl Ring {
                 // Use the Start event's local wall time, not engine startup or disk queue time.
                 let started = chrono::Local::now()
                     - chrono::Duration::nanoseconds(clock::now_ns().saturating_sub(at));
-                let name = started.format("%Y%m%d-%H%M%S").to_string();
+                let name = if let Some(name) = event["recording_name"].as_str() {
+                    ensure!(
+                        name.len() == 15
+                            && name.as_bytes()[8] == b'-'
+                            && name
+                                .bytes()
+                                .enumerate()
+                                .all(|(i, b)| i == 8 || b.is_ascii_digit()),
+                        "Invalid recording name"
+                    );
+                    name.to_owned()
+                } else {
+                    started.format("%Y%m%d-%H%M%S").to_string()
+                };
                 self.sequence += 1;
                 let id = self.sequence;
                 self.recording_id = id;

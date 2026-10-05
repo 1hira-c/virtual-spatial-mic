@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vsm-core", "crates/vsm-live", "apps/desktop/src-tauri"]
+members = ["crates/vsm-core", "crates/vsm-live", "crates/vsm-video", "apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.2.0"
