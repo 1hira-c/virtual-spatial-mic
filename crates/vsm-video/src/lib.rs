@@ -18,8 +18,8 @@ use std::{
 mod platform;
 #[cfg(windows)]
 pub use platform::{DecodeReport, decode_check, inspect};
-mod pixels;
 mod flow;
+mod pixels;
 use flow::AudioQueue;
 #[cfg(windows)]
 pub mod spout;
@@ -38,9 +38,16 @@ pub struct VideoConfig {
     /// Zero chooses the QPC clock immediately after encoder initialization.
     /// A positive clock is useful for deterministic developer fixtures.
     pub start_qpc_ns: i64,
+    /// Manual MP4-only audio alignment. Positive delays audio, negative advances
+    /// it. The capture/source clock remains unchanged for WAV and monitoring.
+    pub audio_offset_ns: i64,
 }
 impl VideoConfig {
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (-2_000_000_000..=2_000_000_000).contains(&self.audio_offset_ns),
+            "Video audio offset must be between -2000 and +2000 ms"
+        );
         ensure!(
             (1..=60).contains(&self.fps),
             "Video frame rate must be 1–60 fps"
@@ -96,6 +103,11 @@ pub struct VideoReport {
     pub audio_clock_adjustment_frames: i64,
     pub origin_qpc_ns: i64,
     pub end_qpc_ns: i64,
+    pub audio_timestamp_basis: &'static str,
+    pub audio_offset_ns: i64,
+    pub video_timestamp_basis: &'static str,
+    pub first_video_acquired_qpc_ns: i64,
+    pub last_video_acquired_qpc_ns: i64,
     pub video_codec: &'static str,
     pub audio_codec: &'static str,
     pub warning: Option<String>,
@@ -105,6 +117,8 @@ pub struct VideoReport {
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
+    /// Receiver-side acquisition QPC, before CPU readback. This is not the
+    /// VRChat renderer's source timestamp, which this transport does not expose.
     pub qpc_ns: i64,
     /// Top-down BGRA, tightly packed, alpha is always 255.
     pub bgra: Arc<Vec<u8>>,
@@ -248,4 +262,30 @@ pub fn now_ns() -> i64 {
 #[cfg(not(windows))]
 pub fn now_ns() -> i64 {
     0
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    #[test]
+    fn manual_audio_offset_is_bounded_and_zero_is_valid() {
+        let mut config = VideoConfig {
+            source: VideoSource::Synthetic {
+                width: 16,
+                height: 16,
+            },
+            fps: 30,
+            bitrate: 3_000_000,
+            start_qpc_ns: 0,
+            audio_offset_ns: 0,
+        };
+        for offset in [-2_000_000_000, 0, 2_000_000_000] {
+            config.audio_offset_ns = offset;
+            assert!(config.validate().is_ok());
+        }
+        for offset in [i64::MIN, -2_000_000_001, 2_000_000_001, i64::MAX] {
+            config.audio_offset_ns = offset;
+            assert!(config.validate().is_err());
+        }
+    }
 }

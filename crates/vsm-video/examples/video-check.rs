@@ -70,6 +70,7 @@ fn main() -> anyhow::Result<()> {
                     fps: 30,
                     bitrate: 3_000_000,
                     start_qpc_ns: requested_origin,
+                    audio_offset_ns: 0,
                 },
             )?;
             let origin = recorder.status().origin_qpc_ns;
@@ -120,12 +121,23 @@ fn main() -> anyhow::Result<()> {
                 );
             } else {
                 anyhow::ensure!(
-                    report.video_frames == (seconds * 30.).ceil() as u64,
-                    "Video cutoff differs from the requested duration"
+                    report.video_frames > 0 && report.video_frames <= (seconds * 30.).ceil() as u64,
+                    "VFR video frame count exceeds its work budget"
                 );
                 anyhow::ensure!(
                     report.audio_frames == limit as u64,
                     "Delayed audio tail was not fully saved"
+                );
+            }
+            if mode != "record-spout-drop" {
+                let decoded = vsm_video::decode_check(path)?;
+                anyhow::ensure!(
+                    (decoded.video_end_100ns - (seconds * 10_000_000.) as i64).abs() <= 1,
+                    "Video sample durations do not end at the exact cutoff: {decoded:?}"
+                );
+                anyhow::ensure!(
+                    report.last_video_acquired_qpc_ns < report.end_qpc_ns,
+                    "A frame acquired after stop was saved"
                 );
             }
             println!(

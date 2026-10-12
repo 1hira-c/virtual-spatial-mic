@@ -83,7 +83,7 @@ async function switchWorkspace(name) {
   el('record-toggle').disabled = true;
   updateWorkspace();
   try {
-    await invoke('video_configure', { value: { enabled: name === 'video', sender_name: state.video?.sender_name || '', fps: 30 } });
+    await invoke('video_configure', { value: videoSettingsValue(name === 'video') });
     captureWorkspace = name;
     if (generation === workspaceGeneration) showWorkspace(name);
     await poll();
@@ -206,6 +206,38 @@ function videoLocked() {
   const engine = state?.engine || {}, video = state?.video?.status || {};
   return !!engine.recording || !!video.active || !!engine.gain_locked || recordingPending || engine.archive_state === 'finalizing' || video.state === 'finalizing';
 }
+function videoSettingsValue(enabled = !!state?.video?.enabled) {
+  return { enabled, sender_name: state?.video?.sender_name || '', fps: 30, audio_offset_ms: state?.video?.audio_offset_ms ?? 0 };
+}
+async function saveVideoAudioOffset() {
+  if (busy || videoLocked() || videoConfigPending || inputPending) return;
+  const input = el('video-audio-offset-ms');
+  const value = input.value.trim(), offset = Number(value);
+  if (!value || !Number.isInteger(offset) || offset < -2000 || offset > 2000) {
+    notice('動画の音声タイミングは−2000〜2000 msの整数で入力してください。');
+    return;
+  }
+  busy = true;
+  videoConfigPending = true;
+  notice('');
+  el('record-toggle').disabled = true;
+  updateVideoState();
+  updateWorkspace();
+  try {
+    const configured = await invoke('video_configure', { value: { ...videoSettingsValue(), audio_offset_ms: offset } });
+    state.video.audio_offset_ms = configured.audio_offset_ms ?? offset;
+    input.value = String(state.video.audio_offset_ms);
+    await poll();
+  } catch (error) {
+    // Keep a rejected value available to correct; persisted settings stay unchanged.
+    notice(error);
+  } finally {
+    busy = false;
+    videoConfigPending = false;
+    updateVideoState();
+    updateWorkspace();
+  }
+}
 function videoConnected(video = state?.video || {}) {
   return !!video.status?.active || video.connection?.state === 'connected';
 }
@@ -214,6 +246,9 @@ function updateVideoState() {
   if (!videoConfigPending) el('video-enabled').checked = !!video.enabled;
   el('video-options').hidden = !el('video-enabled').checked;
   el('video-enabled').disabled = videoLocked() || videoConfigPending;
+  const timing = el('video-audio-offset-ms');
+  timing.disabled = videoLocked() || videoConfigPending || inputPending;
+  if (!videoConfigPending && document.activeElement !== timing) timing.value = String(video.audio_offset_ms ?? 0);
   const connected = videoConnected(video);
   const size = connection.width && connection.height ? ` · ${connection.width}×${connection.height}` : '';
   const saveError = status.state === 'waiting' ? '' : status.error;
@@ -565,6 +600,7 @@ async function toggleRecording() {
   recordingPending = !stopping;
   el('gain').disabled = true;
   el('video-enabled').disabled = true;
+  el('video-audio-offset-ms').disabled = true;
   try {
     await flushGain();
     await invoke('record_control', { recording: !stopping });
@@ -604,6 +640,7 @@ el('gain').addEventListener('input', () => {
   pendingGain = Number(el('gain').value);
   if (!gainTimer) gainTimer = setTimeout(() => flushGain().catch(notice), 50);
 });
+el('video-audio-offset-ms').addEventListener('change', saveVideoAudioOffset);
 for (const id of ['microphone', 'channel', 'monitor-device', 'save-raw']) el(id).addEventListener('change', persistDeviceSettings);
 for (const id of ['save-settings', 'obs-settings', 'reprocess-settings']) {
   const key = `vsm.${id}.open`;

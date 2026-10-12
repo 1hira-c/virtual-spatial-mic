@@ -949,6 +949,11 @@ progress {
 .settings-monitor { display: grid; gap: 6px; margin-top: 16px; }
 .settings-monitor > label { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; }
 .settings-monitor select { max-width: 520px; }
+.settings-video-timing { display: grid; grid-template-columns: auto 118px; justify-content: start; align-items: center; gap: 6px 16px; margin-top: 20px; }
+.settings-video-timing > label { display: block; }
+.video-timing-value { display: flex; align-items: center; gap: 8px; }
+.video-timing-value input { width: 92px; }
+.settings-video-timing > .hint { grid-column: 1 / -1; margin: 0; }
 @media (max-width: 960px) {
   #capture-layout { grid-template-columns: minmax(0, 1fr) 240px; gap: 16px; }
   #capture-controls { padding: 14px; }

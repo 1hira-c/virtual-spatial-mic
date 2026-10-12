@@ -24,6 +24,16 @@ fn settings(value: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .unwrap_or("");
     let fps = value.get("fps").and_then(Value::as_u64).unwrap_or(30);
+    let audio_offset_ms = match value.get("audio_offset_ms") {
+        None => 0,
+        Some(offset) => offset
+            .as_i64()
+            .context("録画音声のタイミング調整は整数のミリ秒で指定してください")?,
+    };
+    ensure!(
+        (-2000..=2000).contains(&audio_offset_ms),
+        "録画音声のタイミング調整は-2000〜2000 msで指定してください"
+    );
     ensure!(
         sender.len() <= 255 && !sender.contains('\0'),
         "映像入力の名前が不正です"
@@ -36,7 +46,7 @@ fn settings(value: &Value) -> Result<Value> {
         AUTO_SOURCE
     };
     Ok(
-        json!({"enabled":enabled,"sender_name":sender,"fps":fps,"automatic":sender!=SYNTHETIC_SOURCE}),
+        json!({"enabled":enabled,"sender_name":sender,"fps":fps,"automatic":sender!=SYNTHETIC_SOURCE,"audio_offset_ms":audio_offset_ms}),
     )
 }
 
@@ -183,6 +193,7 @@ impl VideoRecording {
                 fps: 30,
                 bitrate: 8_000_000,
                 start_qpc_ns: 0,
+                audio_offset_ns: self.config["audio_offset_ms"].as_i64().unwrap_or(0) * 1_000_000,
             },
         ) {
             Ok(recorder) => recorder,
@@ -231,7 +242,9 @@ impl VideoRecording {
             let destination = active.directory.join("video.mp4");
             ensure!(!destination.exists(), "動画の保存先が既に存在します");
             fs::rename(&active.staging, &destination)?;
+            let audio_offset_ms = report.audio_offset_ns / 1_000_000;
             let mut metadata = serde_json::to_value(report)?;
+            metadata["audio_offset_ms"] = json!(audio_offset_ms);
             metadata["path"] = json!("video.mp4");
             metadata["sender_name"] = json!(active.sender_name);
             metadata["timeline"] = json!("source_capture_qpc");
@@ -376,6 +389,62 @@ mod tests {
         let value = settings(&json!({"sender_name":SYNTHETIC_SOURCE})).unwrap();
         assert_eq!(value["sender_name"], SYNTHETIC_SOURCE);
         assert_eq!(value["automatic"], false);
+    }
+
+    #[test]
+    fn legacy_video_settings_default_audio_offset_to_zero() {
+        for old in [
+            json!({}),
+            json!({"enabled":true,"sender_name":"VRCSender1","fps":30}),
+            json!({"enabled":false,"sender_name":SYNTHETIC_SOURCE}),
+        ] {
+            assert_eq!(settings(&old).unwrap()["audio_offset_ms"], 0);
+        }
+    }
+
+    #[test]
+    fn audio_offset_accepts_integer_bounds_and_survives_source_normalization() {
+        for offset in [-2000, -1, 0, 1, 2000] {
+            for sender in ["VRCSender1", "OBS", AUTO_SOURCE, SYNTHETIC_SOURCE] {
+                let normalized = settings(&json!({
+                    "enabled":true,"sender_name":sender,"fps":30,"audio_offset_ms":offset,
+                }))
+                .unwrap();
+                assert_eq!(normalized["audio_offset_ms"].as_i64(), Some(offset));
+                assert_eq!(normalized["enabled"], true);
+                assert_eq!(normalized["fps"], 30);
+                assert_eq!(
+                    normalized["sender_name"],
+                    if sender == SYNTHETIC_SOURCE {
+                        SYNTHETIC_SOURCE
+                    } else {
+                        AUTO_SOURCE
+                    }
+                );
+                assert_eq!(settings(&normalized).unwrap(), normalized);
+            }
+        }
+    }
+
+    #[test]
+    fn audio_offset_rejects_invalid_types_fractional_numbers_and_range() {
+        for invalid in [
+            json!(-2001),
+            json!(2001),
+            json!(i64::MIN),
+            json!(i64::MAX),
+            json!(u64::MAX),
+            json!(-0.5),
+            json!(0.5),
+            json!(1.0),
+            json!("100"),
+            json!(null),
+            json!(true),
+            json!([]),
+            json!({}),
+        ] {
+            assert!(settings(&json!({"audio_offset_ms":invalid})).is_err());
+        }
     }
     #[test]
     fn thumbnail_preserves_top_down_channels_and_scanline_padding() {

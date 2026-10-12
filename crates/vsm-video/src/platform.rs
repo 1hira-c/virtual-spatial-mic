@@ -1,7 +1,12 @@
 use crate::{
-    AudioSink, Latest, Preview, Recorder, VideoConfig, VideoFrame, VideoReport,
-    VideoSource, VideoStatus, now_ns, pixels, spout::Receiver,
-    flow::{AudioClock, AudioQueue, VideoPacer, ns_to_frames},
+    AudioSink, Latest, Preview, Recorder, VideoConfig, VideoFrame, VideoReport, VideoSource,
+    VideoStatus,
+    flow::{
+        AudioClock, AudioQueue, VideoPacer, VideoTimeline, audio_drain_deadline_ns,
+        audio_output_bounds, audio_relative_time_ns, ns_to_frames, video_duration_100ns,
+    },
+    now_ns, pixels,
+    spout::Receiver,
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -55,6 +60,11 @@ impl Drop for Media {
     }
 }
 
+struct CapturedPixels {
+    pixels: Vec<u8>,
+    acquired_qpc_ns: i64,
+}
+
 enum Capture {
     Spout(Receiver),
     Synthetic(u32, u32, u64),
@@ -81,23 +91,30 @@ impl Capture {
             Self::Synthetic(w, h, _) => (*w, *h),
         }
     }
-    fn read(&mut self, fps: u32) -> Result<Option<Vec<u8>>> {
+    fn read(&mut self, fps: u32) -> Result<Option<CapturedPixels>> {
         match self {
-            Self::Spout(r) => r.read(),
+            Self::Spout(r) => Ok(r.read()?.map(|frame| CapturedPixels {
+                pixels: frame.pixels,
+                acquired_qpc_ns: frame.acquired_qpc_ns,
+            })),
             Self::Synthetic(w, h, frame) => {
-                let result = pixels::synthetic(*w, *h, *frame, fps);
+                let acquired_qpc_ns = now_ns();
+                let pixels = pixels::synthetic(*w, *h, *frame, fps);
                 *frame += 1;
-                Ok(Some(result))
+                Ok(Some(CapturedPixels {
+                    pixels,
+                    acquired_qpc_ns,
+                }))
             }
         }
     }
 }
-fn set_latest(latest: &Latest, width: u32, height: u32, bgra: Vec<u8>) {
+fn set_latest(latest: &Latest, width: u32, height: u32, frame: CapturedPixels) {
     *latest.lock().unwrap() = Some(VideoFrame {
         width,
         height,
-        qpc_ns: now_ns(),
-        bgra: Arc::new(bgra),
+        qpc_ns: frame.acquired_qpc_ns,
+        bgra: Arc::new(frame.pixels),
     });
 }
 
@@ -126,7 +143,8 @@ pub(super) fn preview(source: VideoSource) -> Result<Preview> {
                     width,
                     height,
                     frames: first_frames,
-                    max_video_processing_ns: started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                    max_video_processing_ns: started.elapsed().as_nanos().min(u64::MAX as u128)
+                        as u64,
                     ..Default::default()
                 };
                 let _ = ready_tx.send(Ok(()));
@@ -142,7 +160,9 @@ pub(super) fn preview(source: VideoSource) -> Result<Preview> {
                     {
                         let mut status = worker_status.lock().unwrap();
                         status.frames += u64::from(captured);
-                        status.max_video_processing_ns = status.max_video_processing_ns.max(elapsed.as_nanos().min(u64::MAX as u128) as u64);
+                        status.max_video_processing_ns = status
+                            .max_video_processing_ns
+                            .max(elapsed.as_nanos().min(u64::MAX as u128) as u64);
                     }
                     // Include readback work in the 30fps budget instead of adding
                     // 33ms after every read, which caps a 4K preview near 20fps.
@@ -172,6 +192,12 @@ pub(super) fn preview(source: VideoSource) -> Result<Preview> {
     }
 }
 
+struct PendingVideo {
+    bytes: Vec<u8>,
+    time_100ns: i64,
+    acquired_qpc_ns: i64,
+}
+
 struct Encoder {
     writer: IMFSinkWriter,
     video: u32,
@@ -182,6 +208,8 @@ struct Encoder {
     audio_frames: u64,
     video_frames: u64,
     audio_clock: AudioClock,
+    pending_video: Option<PendingVideo>,
+    last_video_acquired_qpc_ns: i64,
     finalized: bool,
 }
 impl Encoder {
@@ -249,16 +277,39 @@ impl Encoder {
                 audio_frames: 0,
                 video_frames: 0,
                 audio_clock: AudioClock::default(),
+                pending_video: None,
+                last_video_acquired_qpc_ns: 0,
                 finalized: false,
             })
         }
     }
-    fn video(&mut self, pixels: &[u8], slot: u64) -> Result<()> {
-        let bytes = pixels::bgra_to_nv12(pixels, self.width, self.height)?;
-        let time = (slot as i128 * 10_000_000 / self.fps as i128) as i64;
-        let end = ((slot + 1) as i128 * 10_000_000 / self.fps as i128) as i64;
-        self.write(self.video, &bytes, time, end - time)?;
+    fn video(&mut self, frame: &VideoFrame, time_100ns: i64) -> Result<()> {
+        // Keep exactly one NV12 sample so its duration ends at the next actual
+        // acquisition PTS. Frame rate gates work; it must not quantize timestamps.
+        if let Some(previous) = self.pending_video.take() {
+            let duration = video_duration_100ns(previous.time_100ns, time_100ns)?;
+            self.write(self.video, &previous.bytes, previous.time_100ns, duration)?;
+            self.last_video_acquired_qpc_ns = previous.acquired_qpc_ns;
+        }
+        let bytes = pixels::bgra_to_nv12(&frame.bgra, self.width, self.height)?;
+        self.pending_video = Some(PendingVideo {
+            bytes,
+            time_100ns,
+            acquired_qpc_ns: frame.qpc_ns,
+        });
         self.video_frames += 1;
+        Ok(())
+    }
+    fn finish_video(&mut self, cutoff_100ns: i64) -> Result<()> {
+        if let Some(previous) = self.pending_video.take() {
+            if cutoff_100ns <= previous.time_100ns {
+                self.video_frames = self.video_frames.saturating_sub(1);
+                return Ok(());
+            }
+            let duration = video_duration_100ns(previous.time_100ns, cutoff_100ns)?;
+            self.write(self.video, &previous.bytes, previous.time_100ns, duration)?;
+            self.last_video_acquired_qpc_ns = previous.acquired_qpc_ns;
+        }
         Ok(())
     }
     fn audio_bytes(&mut self, bytes: &[u8]) -> Result<()> {
@@ -280,27 +331,45 @@ impl Encoder {
         }
         Ok(())
     }
-    fn audio(&mut self, samples: &[f32], at: i64, origin: i64, cutoff: Option<i64>) -> Result<()> {
+    fn audio(
+        &mut self,
+        samples: &[f32],
+        at: i64,
+        origin: i64,
+        cutoff: Option<i64>,
+        offset: i64,
+    ) -> Result<()> {
         let available = samples.len() / 2;
-        if available == 0 { return Ok(()); }
-        let span = self.audio_clock.advance(at - origin, available)?;
-        let start = span.start.max(0) as u64;
-        let mut end = span.end.max(0) as u64;
-        if let Some(cutoff) = cutoff {
-            end = end.min(ns_to_frames((cutoff - origin).max(0)) as u64);
+        if available == 0 {
+            return Ok(());
         }
-        if end <= self.audio_frames || end <= start { return Ok(()); }
+        let span = self
+            .audio_clock
+            .advance(audio_relative_time_ns(at, origin, offset)?, available)?;
+        let limit = cutoff.map(|at| ns_to_frames((at - origin).max(0)) as u64);
+        let Some(bounds) = audio_output_bounds(span, self.audio_frames, limit) else {
+            return Ok(());
+        };
+        let (start, end) = (bounds.start, bounds.end);
         self.silence_until(start)?;
         let count = (end - self.audio_frames) as usize;
         // Clip the source at recording boundaries, then interpolate very small
         // clock corrections across the packet. Never remove its first samples
         // or insert zeros merely because QPC jittered at a packet boundary.
         let full = (span.end - span.start).max(1) as f64;
-        let source_start = ((self.audio_frames as i64 - span.start).max(0) as f64 / full * available as f64).min(available as f64 - 1.);
-        let source_end = ((end as i64 - span.start).max(0) as f64 / full * available as f64).clamp(source_start + 1., available as f64) - 1.;
+        let source_start = ((self.audio_frames as i64 - span.start).max(0) as f64 / full
+            * available as f64)
+            .min(available as f64 - 1.);
+        let source_end = ((end as i64 - span.start).max(0) as f64 / full * available as f64)
+            .clamp(source_start + 1., available as f64)
+            - 1.;
         let mut bytes = Vec::with_capacity(count * 4);
         for frame in 0..count {
-            let position = if count == 1 { source_start } else { source_start + (source_end - source_start) * frame as f64 / (count - 1) as f64 };
+            let position = if count == 1 {
+                source_start
+            } else {
+                source_start + (source_end - source_start) * frame as f64 / (count - 1) as f64
+            };
             let first = position.floor() as usize;
             let next = (first + 1).min(available - 1);
             let mix = (position - first as f64) as f32;
@@ -308,7 +377,11 @@ impl Encoder {
                 let a = samples[first * 2 + channel];
                 let b = samples[next * 2 + channel];
                 let value = a + (b - a) * mix;
-                let value = if value.is_finite() { value.clamp(-1., 1.) } else { 0. };
+                let value = if value.is_finite() {
+                    value.clamp(-1., 1.)
+                } else {
+                    0.
+                };
                 bytes.extend(((value * 32767.).round() as i16).to_le_bytes());
             }
         }
@@ -333,6 +406,17 @@ impl Encoder {
     }
     fn finish(&mut self) -> Result<()> {
         if !self.finalized {
+            // Error recovery still seals any already retained final image. A
+            // successful recording calls finish_video with its exact cutoff first.
+            if let Some(previous) = self.pending_video.take() {
+                self.write(
+                    self.video,
+                    &previous.bytes,
+                    previous.time_100ns,
+                    10_000_000 / self.fps as i64,
+                )?;
+                self.last_video_acquired_qpc_ns = previous.acquired_qpc_ns;
+            }
             unsafe {
                 self.writer.Finalize()?;
             }
@@ -376,7 +460,14 @@ pub(super) fn start(path: &Path, config: VideoConfig) -> Result<Recorder> {
         .name("vsm-video-record".into())
         .spawn(move || {
             let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(path, config, &worker_queue, &worker_latest, &worker_status, &ready_tx)
+                run(
+                    path,
+                    config,
+                    &worker_queue,
+                    &worker_latest,
+                    &worker_status,
+                    &ready_tx,
+                )
             })) {
                 Ok(result) => result,
                 Err(_) => Err(anyhow::anyhow!("Video recording worker panicked")),
@@ -403,6 +494,22 @@ pub(super) fn start(path: &Path, config: VideoConfig) -> Result<Recorder> {
         }
     }
 }
+fn note_stop(
+    queue: &AudioQueue,
+    origin: i64,
+    cutoff: &mut Option<i64>,
+    drain_until: &mut i64,
+    offset: i64,
+) {
+    if let Some(at) = queue.stop() {
+        let at = at.max(origin);
+        if cutoff.is_none_or(|previous| at < previous) {
+            *cutoff = Some(at);
+            *drain_until = audio_drain_deadline_ns(now_ns(), at, offset);
+        }
+    }
+}
+
 fn run(
     path: PathBuf,
     config: VideoConfig,
@@ -428,11 +535,26 @@ fn run(
     } else {
         config.start_qpc_ns
     };
+    // Auto-origin follows this acquisition, so an already available image can
+    // be held at PTS0. An explicit older fixture origin keeps the real positive
+    // acquisition PTS instead of backdating startup through encoder warm-up.
+    let initial = latest
+        .lock()
+        .unwrap()
+        .clone()
+        .context("Missing initial video frame")?;
+    let first_video_acquired_qpc_ns = initial.qpc_ns;
+    let mut timeline = VideoTimeline::new(origin);
+    encoder.video(
+        &initial,
+        timeline.acquired(initial.qpc_ns.max(origin), None).unwrap(),
+    )?;
     *status.lock().unwrap() = VideoStatus {
         active: true,
         width,
         height,
         origin_qpc_ns: origin,
+        frames: encoder.video_frames,
         ..Default::default()
     };
     let _ = ready.send(Ok(()));
@@ -440,51 +562,111 @@ fn run(
     let mut drain_until = 0;
     let mut repeated = 0;
     let mut failure = None;
-    let mut pacer = VideoPacer::default();
+    let mut pacer = VideoPacer {
+        next: 1,
+        skipped: 0,
+    };
     let mut max_video_processing_ns = 0;
     loop {
         let now = now_ns();
-        if cutoff.is_none() {
-            if let Some(at) = queue.stop() {
-                cutoff = Some(at.max(origin));
-                drain_until = at.max(now) + 350_000_000;
-            }
-        }
+        note_stop(
+            queue,
+            origin,
+            &mut cutoff,
+            &mut drain_until,
+            config.audio_offset_ns,
+        );
         if failure.is_none() {
             if let Some(error) = status.lock().unwrap().error.clone() {
                 failure = Some(error);
                 cutoff = Some(now);
-                drain_until = now + 350_000_000;
+                drain_until = audio_drain_deadline_ns(now, now, config.audio_offset_ns);
             }
         }
         // Drain available audio before expensive 4K readback/conversion/encode.
         // A slow video frame can reduce video fps, but cannot starve voice.
         let audio_started = Instant::now();
-        while let Some(packet) = queue.pop() {
-            encoder.audio(&packet.samples, packet.at, origin, cutoff)?;
-            if audio_started.elapsed() >= Duration::from_millis(50) { break; }
+        let mut audio_waiting = false;
+        while let Some((at, frames)) = queue.front_timing() {
+            note_stop(
+                queue,
+                origin,
+                &mut cutoff,
+                &mut drain_until,
+                config.audio_offset_ns,
+            );
+            if frames > 0
+                && cutoff.is_none()
+                && config.audio_offset_ns > 0
+                && !encoder.audio_clock.due(
+                    audio_relative_time_ns(at, origin, config.audio_offset_ns)?,
+                    frames,
+                    now_ns() - origin,
+                )?
+            {
+                audio_waiting = true;
+                break;
+            }
+            let packet = queue.pop().expect("Single audio queue consumer");
+            encoder.audio(
+                &packet.samples,
+                packet.at,
+                origin,
+                cutoff,
+                config.audio_offset_ns,
+            )?;
+            if audio_started.elapsed() >= Duration::from_millis(50) {
+                break;
+            }
         }
         let now = now_ns();
-        if let Some(slot) = pacer.due(origin, now, cutoff, config.fps) {
+        if !cutoff.is_some_and(|at| now >= at)
+            && pacer.due(origin, now, cutoff, config.fps).is_some()
+        {
             let started = Instant::now();
-            if cutoff.is_some_and(|at| now >= at) { repeated += 1; }
-            else {
-                match capture.read(config.fps) {
-                    Ok(Some(frame)) => set_latest(latest, width, height, frame),
-                    Ok(None) => repeated += 1,
-                    Err(error) => {
-                        let error = error.to_string();
-                        status.lock().unwrap().error = Some(error.clone());
-                        failure = Some(error);
-                        cutoff = Some(now);
-                        drain_until = now + 350_000_000;
+            let captured = capture.read(config.fps);
+            // Stop may have arrived while a texture mutex or GPU readback blocked.
+            note_stop(
+                queue,
+                origin,
+                &mut cutoff,
+                &mut drain_until,
+                config.audio_offset_ns,
+            );
+            match captured {
+                Ok(Some(frame)) => {
+                    if let Some(time) = timeline.acquired(frame.acquired_qpc_ns, cutoff) {
+                        set_latest(latest, width, height, frame);
+                        if let Some(frame) = latest.lock().unwrap().clone() {
+                            encoder.video(&frame, time)?;
+                        }
+                    } else {
+                        pacer.skipped += 1;
                     }
                 }
+                Ok(None) => {
+                    repeated += 1;
+                    // A repeat represents a hold at the current time. It does
+                    // not pretend the old image was acquired again by Spout.
+                    if let Some(time) = timeline.acquired(now_ns(), cutoff) {
+                        if let Some(frame) = latest.lock().unwrap().clone() {
+                            encoder.video(&frame, time)?;
+                        }
+                    } else {
+                        pacer.skipped += 1;
+                    }
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    status.lock().unwrap().error = Some(error.clone());
+                    failure = Some(error);
+                    let at = now_ns();
+                    cutoff = Some(cutoff.map_or(at, |previous| previous.min(at)));
+                    drain_until = audio_drain_deadline_ns(at, at, config.audio_offset_ns);
+                }
             }
-            if let Some(frame) = latest.lock().unwrap().clone() {
-                encoder.video(&frame.bgra, slot)?;
-            }
-            max_video_processing_ns = max_video_processing_ns.max(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+            max_video_processing_ns = max_video_processing_ns
+                .max(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
         }
         let stats = queue.stats();
         {
@@ -500,21 +682,37 @@ fn run(
             state.max_audio_jitter_frames = encoder.audio_clock.max_jitter_frames;
             state.audio_clock_adjustment_frames = encoder.audio_clock.adjusted_frames;
         }
-        if cutoff.is_some_and(|at| now_ns() >= at) && now_ns() >= drain_until && stats.frames == 0 { break; }
+        if cutoff.is_some_and(|at| now_ns() >= at) && now_ns() >= drain_until && stats.frames == 0 {
+            break;
+        }
         let next = pacer.next_ns(origin, config.fps);
-        let wait = if cutoff.is_some_and(|at| now_ns() >= at) { Duration::from_millis(5) }
-            else { Duration::from_nanos((next - now_ns()).clamp(0, 20_000_000) as u64) };
-        queue.wait(wait);
+        let wait = if cutoff.is_some_and(|at| now_ns() >= at) {
+            Duration::from_millis(5)
+        } else {
+            Duration::from_nanos((next - now_ns()).clamp(0, 20_000_000) as u64)
+        };
+        if audio_waiting {
+            queue.wait_until_due(wait);
+        } else {
+            queue.wait(wait);
+        }
     }
     let end = cutoff.unwrap();
     let end_frames = ns_to_frames((end - origin).max(0)) as u64;
     encoder.silence_until(end_frames)?;
+    encoder.finish_video((end - origin).max(0) / 100)?;
     encoder.finish()?;
     let stats = queue.stats();
-    ensure!(stats.rejected == 0, "動画の音声保存キューが上限に達し、{:.3}秒の音声を保持できなかったため録画は失敗しました。音声はWAVから確認してください", stats.rejected as f64 / 48_000.);
+    ensure!(
+        stats.rejected == 0,
+        "動画の音声保存キューが上限に達し、{:.3}秒の音声を保持できなかったため録画は失敗しました。音声はWAVから確認してください",
+        stats.rejected as f64 / 48_000.
+    );
     let warning = match (failure, pacer.skipped) {
         (Some(error), _) => Some(error),
-        (None, skipped) if skipped > 0 => Some(format!("映像処理が30fpsに追いつかず{skipped}フレームを間引きました。音声と収録時刻は維持しています")),
+        (None, skipped) if skipped > 0 => Some(format!(
+            "映像処理が30fpsに追いつかず{skipped}フレームを間引きました。音声と収録時刻は維持しています"
+        )),
         _ => None,
     };
     Ok(VideoReport {
@@ -532,6 +730,11 @@ fn run(
         audio_clock_adjustment_frames: encoder.audio_clock.adjusted_frames,
         origin_qpc_ns: origin,
         end_qpc_ns: end,
+        audio_timestamp_basis: "capture_source_qpc_plus_manual_offset",
+        audio_offset_ns: config.audio_offset_ns,
+        video_timestamp_basis: "receiver_texture_acquisition_qpc_before_cpu_readback",
+        first_video_acquired_qpc_ns,
+        last_video_acquired_qpc_ns: encoder.last_video_acquired_qpc_ns,
         video_codec: "H.264",
         audio_codec: "AAC",
         warning,

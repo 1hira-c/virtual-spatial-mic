@@ -217,6 +217,14 @@
       </select>
       </div>
     </div>
+    <div class="settings-video-timing">
+      <label for="video-audio-offset-ms">動画の音声タイミング</label>
+      <div class="video-timing-value">
+        <input id="video-audio-offset-ms" type="number" min="-2000" max="2000" step="10" value="0" aria-describedby="video-audio-offset-hint" title="保存MP4だけに適用します。WAV・モニターの音声は変わりません。">
+        <span class="hint">ms</span>
+      </div>
+      <p id="video-audio-offset-hint" class="hint">−：音声を早める　＋：遅らせる</p>
+    </div>
     <details class="recording-settings" id="save-settings">
       <summary>
         <svg class="disclosure-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>

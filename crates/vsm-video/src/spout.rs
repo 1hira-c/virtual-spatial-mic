@@ -192,6 +192,12 @@ impl Drop for Access {
     }
 }
 
+/// Receiver-side texture snapshot time, not the sender's render time.
+pub(crate) struct AcquiredFrame {
+    pub pixels: Vec<u8>,
+    pub acquired_qpc_ns: i64,
+}
+
 pub(crate) struct Receiver {
     name: String,
     original: TextureInfo,
@@ -319,7 +325,7 @@ impl Receiver {
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
-    pub fn read(&mut self) -> Result<Option<Vec<u8>>> {
+    pub fn read(&mut self) -> Result<Option<AcquiredFrame>> {
         ensure!(
             sender_names()?.iter().any(|n| n == &self.name),
             "Spout映像送信元が終了しました"
@@ -356,6 +362,10 @@ impl Receiver {
                 self.frame_count = Some(count);
             }
         }
+        // The sender texture is locked and its frame counter has been checked.
+        // Timestamp this snapshot before GPU/CPU readback, never at a scheduler
+        // tick from before the mutex wait or at the end of a slow CPU copy.
+        let acquired_qpc_ns = crate::now_ns();
         unsafe {
             self.context.CopyResource(&self.staging, &self.shared);
             self.context.Flush();
@@ -395,6 +405,11 @@ impl Receiver {
         unsafe {
             self.context.Unmap(&self.staging, 0);
         }
-        read.map(Some)
+        read.map(|pixels| {
+            Some(AcquiredFrame {
+                pixels,
+                acquired_qpc_ns,
+            })
+        })
     }
 }
