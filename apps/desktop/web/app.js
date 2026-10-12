@@ -11,8 +11,9 @@ const setText = (id, text) => {
 let state, config, rows = [], selected, busy = false, lastArchive = '', wasRendering = false, monitorEnabled = false;
 let pendingGain, gainTask, gainTimer, recordingPending = false, renaming;
 let preferredOriginal = false, preferredVideo = false, playerKey = '', playerGeneration = 0, playerLoad = Promise.resolve();
-let videoConfigPending = false, videoSourcePending = false, previewRequest = false, previewGeneration = 0, lastVideoError = '', lastVideoState = '', wasVideoSaving = false;
-let videoSources = [];
+let videoConfigPending = false, previewRequest = false, previewGeneration = 0, lastVideoError = '', lastVideoState = '', wasVideoSaving = false;
+let previewAbort, previewFrameNs = '', previewContext;
+const previewUrl = convertFileSrc('frame', 'vsm-preview');
 let workspace = 'audio', captureWorkspace = 'audio', workspaceInitialized = false, workspacePending = false, workspaceGeneration = 0;
 const captureWorkspaces = ['audio', 'video'];
 const workspaceNames = [...captureWorkspaces, 'library', 'settings'];
@@ -54,7 +55,7 @@ function updateWorkspace() {
   const engine = state?.engine || {}, video = state?.video || {};
   const recording = !!engine.recording || !!video.status?.active;
   const saving = engine.archive_state === 'finalizing' || video.status?.state === 'finalizing' || (!recording && !recordingPending && !!engine.gain_locked);
-  const locked = videoLocked() || workspacePending || videoConfigPending || videoSourcePending;
+  const locked = videoLocked() || workspacePending || videoConfigPending;
   for (const name of workspaceNames) {
     const tab = el(`tab-${name}`);
     tab.disabled = !workspaceInitialized || (captureWorkspaces.includes(name) && (workspacePending || (name !== captureWorkspace && locked)));
@@ -72,7 +73,7 @@ function updateWorkspace() {
 async function switchWorkspace(name) {
   if (!workspaceNames.includes(name) || !workspaceInitialized || name === workspace) return;
   if (!captureWorkspaces.includes(name) || name === captureWorkspace) { showWorkspace(name); return; }
-  if (busy || videoLocked() || videoConfigPending || videoSourcePending) return;
+  if (busy || videoLocked() || videoConfigPending) return;
   busy = true;
   workspacePending = true;
   const generation = workspaceGeneration;
@@ -205,99 +206,76 @@ function videoLocked() {
   const engine = state?.engine || {}, video = state?.video?.status || {};
   return !!engine.recording || !!video.active || !!engine.gain_locked || recordingPending || engine.archive_state === 'finalizing' || video.state === 'finalizing';
 }
-function selectVideoSender(name) {
-  if (name && ![...el('video-source').options].some(option => option.value === name)) {
-    const option = document.createElement('option');
-    option.value = name;
-    option.textContent = name === '__vsm_test_pattern' ? 'テスト映像' : `${name}（未検出）`;
-    el('video-source').append(option);
-  }
-  el('video-source').value = name || '';
+function videoConnected(video = state?.video || {}) {
+  return !!video.status?.active || video.connection?.state === 'connected';
 }
 function updateVideoState() {
-  const video = state?.video || {}, status = video.status || {};
-  if (!videoConfigPending) {
-    el('video-enabled').checked = !!video.enabled;
-    selectVideoSender(video.sender_name);
-  }
-  const enabled = el('video-enabled').checked;
-  el('video-options').hidden = !enabled;
-  const locked = videoLocked() || videoConfigPending || videoSourcePending;
-  for (const id of ['video-enabled', 'video-source', 'video-refresh']) el(id).disabled = locked;
-  const waitingError = status.state === 'waiting' ? status.error : !status.active ? video.preview?.error : '';
+  const video = state?.video || {}, status = video.status || {}, connection = video.connection || {};
+  if (!videoConfigPending) el('video-enabled').checked = !!video.enabled;
+  el('video-options').hidden = !el('video-enabled').checked;
+  el('video-enabled').disabled = videoLocked() || videoConfigPending;
+  const connected = videoConnected(video);
+  const size = connection.width && connection.height ? ` · ${connection.width}×${connection.height}` : '';
   const saveError = status.state === 'waiting' ? '' : status.error;
-  let text = '', errorMessage = '';
+  let text = !video.enabled ? '待機中' : connected ? `接続済み${size}` : connection.state === 'connecting' ? '接続中…' : '探しています…';
+  let errorMessage = '';
+  if (status.state === 'finalizing') text = '保存中…';
+  else if (status.active) text = `録画中${size}`;
   if (saveError) {
-    text = status.state === 'saved' ? `保存済み · 映像取得の警告：${saveError}` : `動画保存に失敗：${saveError}`;
+    text = status.state === 'saved' ? `保存済み · 映像の警告：${saveError}` : `動画保存に失敗：${saveError}`;
     errorMessage = status.state === 'saved' ? `動画は保存しましたが、映像取得に問題がありました：${saveError}` : `動画保存に失敗しました：${saveError}`;
-  } else if (waitingError) {
-    text = `映像入力待ち：${waitingError}`;
-    errorMessage = `${text}。映像一覧を更新してください。`;
-  } else if (status.state === 'finalizing') text = '動画を保存中…';
-  else if (status.active) text = '録画中 · 30 fps';
-  else if (status.state === 'saved') text = '保存済み · MP4';
-  else if (enabled) text = el('video-source').value ? '30 fps · MP4' : '映像を選んでください';
+  }
   el('video-state').textContent = text;
-  el('video-preview-hint').textContent = waitingError ? '映像入力待ちです。映像一覧を更新してください。' : video.sender_name ? '映像を待っています…' : 'Spout映像を選んでください';
-  if (!status.active && (video.preview?.active === false || status.state === 'waiting')) clearVideoPreview();
+  el('video-state').title = connection.error || '';
+  el('video-preview-hint').textContent = connected ? '映像を待っています…' : 'VRChatでカメラを開き、Spout出力をONにしてください';
+  if (!connected) clearVideoPreview();
   const errorKey = errorMessage ? `${status.state}:${errorMessage}` : '';
   if (errorKey && errorKey !== lastVideoError) notice(errorMessage);
   lastVideoError = errorKey;
 }
-async function refreshVideoSources() {
-  videoSourcePending = true;
-  updateVideoState();
-  try {
-    const result = await invoke('video_sources');
-    const sender = el('video-source').value || state?.video?.sender_name || '';
-    videoSources = result.sources || [];
-    el('video-source').replaceChildren(new Option('映像を選んでください', ''));
-    for (const source of videoSources) {
-      const size = source.width && source.height ? ` · ${source.width}×${source.height}` : '';
-      el('video-source').append(new Option(`${source.name}${size}`, source.name));
-    }
-    if (result.synthetic_allowed) el('video-source').append(new Option('テスト映像', '__vsm_test_pattern'));
-    selectVideoSender(sender);
-  } finally { videoSourcePending = false; updateVideoState(); }
-}
-async function configureVideo() {
-  if (busy || videoLocked()) { updateVideoState(); return; }
-  busy = true;
-  videoConfigPending = true;
-  clearVideoPreview();
-  notice('');
-  updateVideoState();
-  try {
-    await invoke('video_configure', { value: { enabled: el('video-enabled').checked, sender_name: el('video-source').value, fps: 30 } });
-    await poll();
-  } catch (error) { notice(error); }
-  finally { busy = false; videoConfigPending = false; updateVideoState(); }
-}
 function clearVideoPreview() {
   ++previewGeneration;
+  previewAbort?.abort();
+  previewFrameNs = '';
   el('video-preview').hidden = true;
-  el('video-preview').removeAttribute('src');
   el('video-preview-hint').hidden = false;
 }
 async function pollVideoPreview() {
-  if (document.hidden || workspace !== 'video' || !state?.video?.enabled || !state?.video?.sender_name || videoConfigPending || (!state?.video?.status?.active && (state?.video?.preview?.active === false || state?.video?.status?.state === 'waiting'))) {
-    clearVideoPreview();
+  if (document.hidden || workspace !== 'video' || !state?.video?.enabled || videoConfigPending || !videoConnected()) {
+    if (previewAbort || !el('video-preview').hidden) clearVideoPreview();
     return;
   }
   if (previewRequest) return;
   previewRequest = true;
-  const generation = previewGeneration;
+  const generation = previewGeneration, controller = new AbortController();
+  previewAbort = controller;
+  let bitmap;
   try {
-    const preview = await invoke('video_preview');
-    if (generation !== previewGeneration) return;
-    if (!preview?.bmp_base64) { clearVideoPreview(); return; }
-    el('video-preview').src = `data:image/bmp;base64,${preview.bmp_base64}`;
-    el('video-preview').hidden = false;
+    // One frame in flight: late frames never accumulate behind the live image.
+    const response = await fetch(`${previewUrl}?after=${encodeURIComponent(previewFrameNs)}`, { signal: controller.signal, cache: 'no-store' });
+    if (generation !== previewGeneration || response.status === 204) return;
+    if (!response.ok) return;
+    bitmap = await createImageBitmap(await response.blob());
+    if (generation !== previewGeneration || document.hidden || workspace !== 'video') return;
+    const canvas = el('video-preview');
+    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+    }
+    previewContext ||= canvas.getContext('2d', { alpha: false, desynchronized: true });
+    previewContext.drawImage(bitmap, 0, 0);
+    previewFrameNs = response.headers.get('X-VSM-Frame-Ns') || '';
+    canvas.hidden = false;
     el('video-preview-hint').hidden = true;
-  } catch { /* Recording status reports capture errors; preview is optional. */ }
-  finally { previewRequest = false; }
+  } catch { /* Connection/recording status reports failures without interrupting audio. */ }
+  finally {
+    bitmap?.close();
+    if (previewAbort === controller) previewAbort = undefined;
+    previewRequest = false;
+  }
 }
-setInterval(pollVideoPreview, 250);
+setInterval(pollVideoPreview, 1000 / 30);
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearVideoPreview(); });
 function applyConfig(c) { config = c; el('microphone').value = c.endpoint_id; el('channel').value = c.channel; el('gain').value = c.gain_db; el('gain-value').value = `${c.gain_db} dB`; el('save-raw').checked = c.save_raw; el('output-root').textContent = c.output_root; el('output-root').title = c.output_root; el('monitor-device').value = c.monitor_endpoint; updateCaptureDeviceSummary(); }
 function flushGain() {
   clearTimeout(gainTimer);
@@ -483,7 +461,7 @@ async function poll() {
   const obs = state.obs_link, obsLinked = obs.status?.state === 'connected';
   updateVideoState();
   const video = state.video || {}, finalizing = video.status?.state === 'finalizing' || e.archive_state === 'finalizing' || (!recording && !recordingPending && !!e.gain_locked);
-  el('record-toggle').disabled = videoConfigPending || workspacePending || !active || (obsLinked && !video.status?.active) || recordingPending || finalizing || (!recording && !!e.gain_locked) || (!recording && video.enabled && !video.sender_name);
+  el('record-toggle').disabled = videoConfigPending || workspacePending || !active || (obsLinked && !video.status?.active) || recordingPending || finalizing || (!recording && !!e.gain_locked) || (!recording && video.enabled && !videoConnected(video));
   setText('record-toggle', video.enabled ? (recording ? '録画を停止' : '録画を開始') : (recording ? '録音を停止' : '録音を開始'));
   el('record-toggle').classList.toggle('recording', recording);
   el('record-state').textContent = finalizing ? '保存中…' : recording ? (video.status?.active ? '録画中' : obsLinked ? '録音中 · OBSの録画に連動' : '録音中') : active ? (obsLinked ? 'OBSの録画開始を待っています · 直前の音声も保持しています' : '待機中 · 直前の音声も保持しています') : '';
@@ -495,7 +473,7 @@ async function poll() {
   setText('monitor-toggle', monitorEnabled ? 'モニター停止' : 'モニター開始');
   el('monitor-state').textContent = state.monitor.error || (state.monitor.ready ? '出力中' : monitorEnabled ? '準備中' : '');
   updateSaveSummary();
-  el('connection').textContent = e.network ? JSON.stringify(e.network, null, 2) : '未接続';
+  el('connection').textContent = JSON.stringify({ osc: e.network || '未接続', camera: video.connection || {}, preview: video.preview_transport || {}, recording: video.status || {} }, null, 2);
   const r = state.render;
   el('cancel').hidden = !r.active;
   el('progress').hidden = !r.active;
@@ -586,7 +564,7 @@ async function toggleRecording() {
   const stopping = !!state.engine.recording || !!state.video?.status?.active;
   recordingPending = !stopping;
   el('gain').disabled = true;
-  for (const id of ['video-enabled', 'video-source', 'video-refresh']) el(id).disabled = true;
+  el('video-enabled').disabled = true;
   try {
     await flushGain();
     await invoke('record_control', { recording: !stopping });
@@ -611,9 +589,6 @@ for (const name of workspaceNames) {
     if (workspace === next) el(`tab-${next}`).focus();
   });
 }
-action('video-refresh' , refreshVideoSources);
-el('video-enabled').addEventListener('change', configureVideo);
-el('video-source').addEventListener('change', configureVideo);
 action('obs-save', async () => {
   await invoke('obs_link_configure', { value: { enabled: el('obs-enabled').checked, host: el('obs-host').value, port: Number(el('obs-port').value), password: el('obs-password').value } });
   applyObsSettings((await invoke('studio_status')).obs_link);
@@ -639,5 +614,5 @@ for (const id of ['save-settings', 'obs-settings', 'reprocess-settings']) {
 }
 el('player').addEventListener('error', () => { if (el('player').getAttribute('src')) notice('音声を再生できませんでした。保存場所からWAVを確認できます。'); });
 el('video-player').addEventListener('error', () => { if (el('video-player').getAttribute('src')) notice('動画を再生できませんでした。保存場所からMP4を確認できます。'); });
-async function initialize() { await poll(); const devices = await invoke('audio_devices'); for (const [key, id] of [['inputs','microphone'], ['outputs','monitor-device']]) { for (const d of devices[key] || []) { const option = document.createElement('option'); option.value = d.endpoint_id || d.id; option.textContent = `${d.name || d.friendly_name}${d.supported === false ? '（形式未対応）' : ''}`; option.disabled = d.supported === false; el(id).append(option); } } applyConfig(state.config); applyObsSettings(state.obs_link); await refreshVideoSources(); if (devices.message) notice(devices.message); await refresh(); }
+async function initialize() { await poll(); const devices = await invoke('audio_devices'); for (const [key, id] of [['inputs','microphone'], ['outputs','monitor-device']]) { for (const d of devices[key] || []) { const option = document.createElement('option'); option.value = d.endpoint_id || d.id; option.textContent = `${d.name || d.friendly_name}${d.supported === false ? '（形式未対応）' : ''}`; option.disabled = d.supported === false; el(id).append(option); } } applyConfig(state.config); applyObsSettings(state.obs_link); if (devices.message) notice(devices.message); await refresh(); }
 initialize().catch(notice).finally(() => { setInterval(() => { if (!busy) poll().catch(notice); }, 700); });

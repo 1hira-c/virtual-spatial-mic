@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod preview;
 mod video;
+mod video_connection;
 
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -111,7 +113,7 @@ fn plain(path: &Path) -> String {
 }
 
 #[tauri::command]
-fn studio_status(state: State<Shared>) -> CommandResult<Value> {
+fn studio_status(state: State<Shared>, app: tauri::AppHandle) -> CommandResult<Value> {
     let mut s = state.lock().map_err(err)?;
     if s.video.recording()
         && (!s.running()
@@ -122,11 +124,16 @@ fn studio_status(state: State<Shared>) -> CommandResult<Value> {
     {
         let _ = s.stop_video(vsm_live::clock::now_ns());
     }
+    let mut video = s.video.status();
+    video["preview_transport"] = app
+        .try_state::<preview::Cache>()
+        .map(|cache| cache.metrics())
+        .unwrap_or(Value::Null);
     let monitor = s.monitor.lock().map_err(err)?;
     let o = &s.obs_settings;
     let obs = json!({"enabled":o["enabled"],"host":o["host"],"port":o["port"],"password_set":o["password"]!="","status":s.obs_link.as_ref().map(ObsLink::status).unwrap_or(json!({"state":"off"})),"obs_recording":s.obs.obs_active,"joined":s.obs.joined});
     Ok(
-        json!({"video":s.video.status(),"obs_link":obs,"config":s.config,"fixture":s.fixture.is_object(),"engine":s.engine.as_ref().map(Engine::status).unwrap_or(json!({"active":false,"state":"stopped","message":"入力は無効です"})),"monitor":monitor.as_ref().map(Monitor::status).unwrap_or(json!({"ready":false})),"monitor_enabled":monitor.is_some(),"render":s.render.as_ref().map(|r|r.state.lock().unwrap().clone()).unwrap_or(json!({"active":false})),"runtime":"Rust / Tauri"}),
+        json!({"video":video,"obs_link":obs,"config":s.config,"fixture":s.fixture.is_object(),"engine":s.engine.as_ref().map(Engine::status).unwrap_or(json!({"active":false,"state":"stopped","message":"入力は無効です"})),"monitor":monitor.as_ref().map(Monitor::status).unwrap_or(json!({"ready":false})),"monitor_enabled":monitor.is_some(),"render":s.render.as_ref().map(|r|r.state.lock().unwrap().clone()).unwrap_or(json!({"active":false})),"runtime":"Rust / Tauri"}),
     )
 }
 
@@ -549,6 +556,12 @@ fn run() -> Result<()> {
         }
     }
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("vsm-preview", |context, request, responder| {
+            let app = context.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(preview::serve(&app, request))
+            });
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
@@ -575,6 +588,7 @@ fn run() -> Result<()> {
             }
             let output_roots =
                 HashSet::from([PathBuf::from(config["output_root"].as_str().unwrap())]);
+            app.manage(preview::Cache::default());
             app.manage(Mutex::new(Studio {
                 config,
                 settings_path,

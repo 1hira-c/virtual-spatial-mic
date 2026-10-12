@@ -1,6 +1,7 @@
 use crate::{
-    AudioSink, Command, Latest, Preview, Recorder, VideoConfig, VideoFrame, VideoReport,
+    AudioSink, Latest, Preview, Recorder, VideoConfig, VideoFrame, VideoReport,
     VideoSource, VideoStatus, now_ns, pixels, spout::Receiver,
+    flow::{AudioClock, AudioQueue, VideoPacer, ns_to_frames},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -8,10 +9,10 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver as Channel, RecvTimeoutError},
+        mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows::{
     Win32::{
@@ -114,21 +115,38 @@ pub(super) fn preview(source: VideoSource) -> Result<Preview> {
                 let _com = Com::open()?;
                 let mut capture = Capture::open(source)?;
                 let (width, height) = capture.dimensions();
-                if let Some(pixels) = capture.read(30)? {
+                let started = Instant::now();
+                let first = capture.read(30)?;
+                let first_frames = u64::from(first.is_some());
+                if let Some(pixels) = first {
                     set_latest(&worker_latest, width, height, pixels);
                 }
                 *worker_status.lock().unwrap() = VideoStatus {
                     active: true,
                     width,
                     height,
+                    frames: first_frames,
+                    max_video_processing_ns: started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
                     ..Default::default()
                 };
                 let _ = ready_tx.send(Ok(()));
+                let period = Duration::from_nanos(1_000_000_000 / 30);
                 while !worker_cancel.load(Ordering::Relaxed) {
-                    thread::sleep(Duration::from_millis(33));
-                    if let Some(pixels) = capture.read(30)? {
+                    let started = Instant::now();
+                    let frame = capture.read(30)?;
+                    let captured = frame.is_some();
+                    if let Some(pixels) = frame {
                         set_latest(&worker_latest, width, height, pixels);
                     }
+                    let elapsed = started.elapsed();
+                    {
+                        let mut status = worker_status.lock().unwrap();
+                        status.frames += u64::from(captured);
+                        status.max_video_processing_ns = status.max_video_processing_ns.max(elapsed.as_nanos().min(u64::MAX as u128) as u64);
+                    }
+                    // Include readback work in the 30fps budget instead of adding
+                    // 33ms after every read, which caps a 4K preview near 20fps.
+                    thread::sleep(period.saturating_sub(elapsed));
                 }
                 Ok(())
             })();
@@ -163,6 +181,7 @@ struct Encoder {
     fps: u32,
     audio_frames: u64,
     video_frames: u64,
+    audio_clock: AudioClock,
     finalized: bool,
 }
 impl Encoder {
@@ -179,6 +198,10 @@ impl Encoder {
             let attributes = attributes.unwrap();
             attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
             attributes.SetUINT32(&MF_SINK_WRITER_DISABLE_THROTTLING, 1)?;
+            // Windows 8+ MPEG-4 sinks support files above 4GiB automatically;
+            // no LARGE_MDAT/co64 opt-in exists. Preserve the default non-fragmented
+            // sink rather than requesting MOOV-before-MDAT (an extra file copy).
+            // https://learn.microsoft.com/windows/win32/medfound/mpeg-4-file-sink
             let writer = MFCreateSinkWriterFromURL(PCWSTR(filename.as_ptr()), None, &attributes)
                 .context("Windows MP4 writer unavailable")?;
             let output = MFCreateMediaType()?;
@@ -225,14 +248,15 @@ impl Encoder {
                 fps,
                 audio_frames: 0,
                 video_frames: 0,
+                audio_clock: AudioClock::default(),
                 finalized: false,
             })
         }
     }
-    fn video(&mut self, pixels: &[u8]) -> Result<()> {
+    fn video(&mut self, pixels: &[u8], slot: u64) -> Result<()> {
         let bytes = pixels::bgra_to_nv12(pixels, self.width, self.height)?;
-        let time = (self.video_frames as i128 * 10_000_000 / self.fps as i128) as i64;
-        let end = ((self.video_frames + 1) as i128 * 10_000_000 / self.fps as i128) as i64;
+        let time = (slot as i128 * 10_000_000 / self.fps as i128) as i64;
+        let end = ((slot + 1) as i128 * 10_000_000 / self.fps as i128) as i64;
         self.write(self.video, &bytes, time, end - time)?;
         self.video_frames += 1;
         Ok(())
@@ -257,40 +281,40 @@ impl Encoder {
         Ok(())
     }
     fn audio(&mut self, samples: &[f32], at: i64, origin: i64, cutoff: Option<i64>) -> Result<()> {
-        let first = ns_to_frames(at - origin);
         let available = samples.len() / 2;
-        let skip = (self.audio_frames as i64 - first).max(0) as usize;
-        if skip >= available {
-            return Ok(());
-        }
-        let start = first + skip as i64;
-        ensure!(start >= 0, "Invalid audio timeline");
-        // Prevent a bogus timestamp from filling hours of silence or allocating huge buffers.
-        ensure!(
-            start as u64 <= self.audio_frames + 48000 * 10,
-            "Video audio clock jumped more than 10 seconds"
-        );
-        let mut count = available - skip;
+        if available == 0 { return Ok(()); }
+        let span = self.audio_clock.advance(at - origin, available)?;
+        let start = span.start.max(0) as u64;
+        let mut end = span.end.max(0) as u64;
         if let Some(cutoff) = cutoff {
-            let end = ns_to_frames((cutoff - origin).max(0));
-            count = count.min((end - start).max(0) as usize);
+            end = end.min(ns_to_frames((cutoff - origin).max(0)) as u64);
         }
-        if count == 0 {
-            return Ok(());
-        }
-        self.silence_until(start as u64)?;
+        if end <= self.audio_frames || end <= start { return Ok(()); }
+        self.silence_until(start)?;
+        let count = (end - self.audio_frames) as usize;
+        // Clip the source at recording boundaries, then interpolate very small
+        // clock corrections across the packet. Never remove its first samples
+        // or insert zeros merely because QPC jittered at a packet boundary.
+        let full = (span.end - span.start).max(1) as f64;
+        let source_start = ((self.audio_frames as i64 - span.start).max(0) as f64 / full * available as f64).min(available as f64 - 1.);
+        let source_end = ((end as i64 - span.start).max(0) as f64 / full * available as f64).clamp(source_start + 1., available as f64) - 1.;
         let mut bytes = Vec::with_capacity(count * 4);
-        for sample in &samples[skip * 2..(skip + count) * 2] {
-            let sample = if sample.is_finite() {
-                sample.clamp(-1., 1.)
-            } else {
-                0.
-            };
-            let value = (sample * 32767.).round() as i16;
-            bytes.extend(value.to_le_bytes());
+        for frame in 0..count {
+            let position = if count == 1 { source_start } else { source_start + (source_end - source_start) * frame as f64 / (count - 1) as f64 };
+            let first = position.floor() as usize;
+            let next = (first + 1).min(available - 1);
+            let mix = (position - first as f64) as f32;
+            for channel in 0..2 {
+                let a = samples[first * 2 + channel];
+                let b = samples[next * 2 + channel];
+                let value = a + (b - a) * mix;
+                let value = if value.is_finite() { value.clamp(-1., 1.) } else { 0. };
+                bytes.extend(((value * 32767.).round() as i16).to_le_bytes());
+            }
         }
         self.audio_bytes(&bytes)
     }
+
     fn write(&self, stream: u32, bytes: &[u8], time: i64, duration: i64) -> Result<()> {
         unsafe {
             let buffer = MFCreateMemoryBuffer(bytes.len().try_into()?)?;
@@ -341,7 +365,8 @@ unsafe fn video_attributes(
 }
 
 pub(super) fn start(path: &Path, config: VideoConfig) -> Result<Recorder> {
-    let (tx, rx) = mpsc::sync_channel(1024);
+    let queue = Arc::new(AudioQueue::default());
+    let worker_queue = queue.clone();
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let latest = Arc::new(Mutex::new(None));
     let status = Arc::new(Mutex::new(VideoStatus::default()));
@@ -351,11 +376,12 @@ pub(super) fn start(path: &Path, config: VideoConfig) -> Result<Recorder> {
         .name("vsm-video-record".into())
         .spawn(move || {
             let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(path, config, rx, &worker_latest, &worker_status, &ready_tx)
+                run(path, config, &worker_queue, &worker_latest, &worker_status, &ready_tx)
             })) {
                 Ok(result) => result,
                 Err(_) => Err(anyhow::anyhow!("Video recording worker panicked")),
             };
+            worker_queue.close();
             let mut state = worker_status.lock().unwrap();
             state.active = false;
             if let Err(error) = &result {
@@ -366,12 +392,12 @@ pub(super) fn start(path: &Path, config: VideoConfig) -> Result<Recorder> {
         })?;
     match ready_rx.recv_timeout(Duration::from_secs(20)) {
         Ok(Ok(())) => Ok(Recorder {
-            sink: AudioSink { tx, status },
+            sink: AudioSink { queue, status },
             latest,
             worker: Some(worker),
         }),
         other => {
-            let _ = tx.send(Command::Stop(now_ns()));
+            queue.stop_at(now_ns());
             let _ = worker.join();
             anyhow::bail!("Could not start video recording: {other:?}")
         }
@@ -380,7 +406,7 @@ pub(super) fn start(path: &Path, config: VideoConfig) -> Result<Recorder> {
 fn run(
     path: PathBuf,
     config: VideoConfig,
-    rx: Channel<Command>,
+    queue: &AudioQueue,
     latest: &Latest,
     status: &Arc<Mutex<VideoStatus>>,
     ready: &mpsc::SyncSender<std::result::Result<(), String>>,
@@ -414,8 +440,16 @@ fn run(
     let mut drain_until = 0;
     let mut repeated = 0;
     let mut failure = None;
+    let mut pacer = VideoPacer::default();
+    let mut max_video_processing_ns = 0;
     loop {
         let now = now_ns();
+        if cutoff.is_none() {
+            if let Some(at) = queue.stop() {
+                cutoff = Some(at.max(origin));
+                drain_until = at.max(now) + 350_000_000;
+            }
+        }
         if failure.is_none() {
             if let Some(error) = status.lock().unwrap().error.clone() {
                 failure = Some(error);
@@ -423,16 +457,18 @@ fn run(
                 drain_until = now + 350_000_000;
             }
         }
-        let limit = cutoff.unwrap_or(now);
-        let next =
-            origin + (encoder.video_frames as i128 * 1_000_000_000 / config.fps as i128) as i64;
-        if next < limit && next <= now {
-            // An overdue PTS has no captured historic frame. Hold the cached
-            // image rather than label a newly acquired future image as the past.
-            if cutoff.is_some_and(|at| now >= at) || now - next >= 1_000_000_000 / config.fps as i64
-            {
-                repeated += 1;
-            } else {
+        // Drain available audio before expensive 4K readback/conversion/encode.
+        // A slow video frame can reduce video fps, but cannot starve voice.
+        let audio_started = Instant::now();
+        while let Some(packet) = queue.pop() {
+            encoder.audio(&packet.samples, packet.at, origin, cutoff)?;
+            if audio_started.elapsed() >= Duration::from_millis(50) { break; }
+        }
+        let now = now_ns();
+        if let Some(slot) = pacer.due(origin, now, cutoff, config.fps) {
+            let started = Instant::now();
+            if cutoff.is_some_and(|at| now >= at) { repeated += 1; }
+            else {
                 match capture.read(config.fps) {
                     Ok(Some(frame)) => set_latest(latest, width, height, frame),
                     Ok(None) => repeated += 1,
@@ -446,44 +482,41 @@ fn run(
                 }
             }
             if let Some(frame) = latest.lock().unwrap().clone() {
-                encoder.video(&frame.bgra)?;
+                encoder.video(&frame.bgra, slot)?;
             }
+            max_video_processing_ns = max_video_processing_ns.max(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
         }
-        if cutoff.is_some() && now >= drain_until {
-            break;
+        let stats = queue.stats();
+        {
+            let mut state = status.lock().unwrap();
+            state.frames = encoder.video_frames;
+            state.audio_frames = encoder.audio_frames;
+            state.repeated_frames = repeated;
+            state.skipped_frames = pacer.skipped;
+            state.queued_audio_frames = stats.frames;
+            state.peak_audio_queue_frames = stats.peak;
+            state.audio_queue_rejected_frames = stats.rejected;
+            state.max_video_processing_ns = max_video_processing_ns;
+            state.max_audio_jitter_frames = encoder.audio_clock.max_jitter_frames;
+            state.audio_clock_adjustment_frames = encoder.audio_clock.adjusted_frames;
         }
-        let next =
-            origin + (encoder.video_frames as i128 * 1_000_000_000 / config.fps as i128) as i64;
-        let wait = if cutoff.is_some() {
-            Duration::from_millis(5)
-        } else {
-            Duration::from_nanos((next - now_ns()).clamp(0, 20_000_000) as u64)
-        };
-        match rx.recv_timeout(wait) {
-            Ok(Command::Audio(samples, at)) => encoder.audio(&samples, at, origin, cutoff)?,
-            Ok(Command::Stop(at)) => {
-                if cutoff.is_none() {
-                    cutoff = Some(at.max(origin));
-                    drain_until = at.max(now_ns()) + 350_000_000;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                if cutoff.is_none() {
-                    cutoff = Some(now_ns());
-                    drain_until = now_ns() + 350_000_000;
-                }
-            }
-        }
-        let mut state = status.lock().unwrap();
-        state.frames = encoder.video_frames;
-        state.audio_frames = encoder.audio_frames;
-        state.repeated_frames = repeated;
+        if cutoff.is_some_and(|at| now_ns() >= at) && now_ns() >= drain_until && stats.frames == 0 { break; }
+        let next = pacer.next_ns(origin, config.fps);
+        let wait = if cutoff.is_some_and(|at| now_ns() >= at) { Duration::from_millis(5) }
+            else { Duration::from_nanos((next - now_ns()).clamp(0, 20_000_000) as u64) };
+        queue.wait(wait);
     }
     let end = cutoff.unwrap();
     let end_frames = ns_to_frames((end - origin).max(0)) as u64;
     encoder.silence_until(end_frames)?;
     encoder.finish()?;
+    let stats = queue.stats();
+    ensure!(stats.rejected == 0, "動画の音声保存キューが上限に達し、{:.3}秒の音声を保持できなかったため録画は失敗しました。音声はWAVから確認してください", stats.rejected as f64 / 48_000.);
+    let warning = match (failure, pacer.skipped) {
+        (Some(error), _) => Some(error),
+        (None, skipped) if skipped > 0 => Some(format!("映像処理が30fpsに追いつかず{skipped}フレームを間引きました。音声と収録時刻は維持しています")),
+        _ => None,
+    };
     Ok(VideoReport {
         path: path.to_string_lossy().into_owned(),
         width,
@@ -492,23 +525,17 @@ fn run(
         video_frames: encoder.video_frames,
         audio_frames: encoder.audio_frames,
         repeated_frames: repeated,
+        skipped_frames: pacer.skipped,
+        peak_audio_queue_frames: stats.peak,
+        max_video_processing_ns,
+        max_audio_jitter_frames: encoder.audio_clock.max_jitter_frames,
+        audio_clock_adjustment_frames: encoder.audio_clock.adjusted_frames,
         origin_qpc_ns: origin,
         end_qpc_ns: end,
         video_codec: "H.264",
         audio_codec: "AAC",
-        warning: failure,
+        warning,
     })
-}
-
-fn ns_to_frames(ns: i64) -> i64 {
-    let value = ns as i128 * 48000;
-    ((value
-        + if value >= 0 {
-            500_000_000
-        } else {
-            -500_000_000
-        })
-        / 1_000_000_000) as i64
 }
 
 #[cfg(test)]

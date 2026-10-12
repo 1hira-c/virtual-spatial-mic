@@ -10,7 +10,6 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{SyncSender, TrySendError},
     },
     thread::JoinHandle,
 };
@@ -20,6 +19,8 @@ mod platform;
 #[cfg(windows)]
 pub use platform::{DecodeReport, decode_check, inspect};
 mod pixels;
+mod flow;
+use flow::AudioQueue;
 #[cfg(windows)]
 pub mod spout;
 
@@ -70,6 +71,13 @@ pub struct VideoStatus {
     pub frames: u64,
     pub audio_frames: u64,
     pub repeated_frames: u64,
+    pub skipped_frames: u64,
+    pub queued_audio_frames: u64,
+    pub peak_audio_queue_frames: u64,
+    pub audio_queue_rejected_frames: u64,
+    pub max_video_processing_ns: u64,
+    pub max_audio_jitter_frames: f64,
+    pub audio_clock_adjustment_frames: i64,
     pub error: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -81,16 +89,16 @@ pub struct VideoReport {
     pub video_frames: u64,
     pub audio_frames: u64,
     pub repeated_frames: u64,
+    pub skipped_frames: u64,
+    pub peak_audio_queue_frames: u64,
+    pub max_video_processing_ns: u64,
+    pub max_audio_jitter_frames: f64,
+    pub audio_clock_adjustment_frames: i64,
     pub origin_qpc_ns: i64,
     pub end_qpc_ns: i64,
     pub video_codec: &'static str,
     pub audio_codec: &'static str,
     pub warning: Option<String>,
-}
-
-enum Command {
-    Audio(Vec<f32>, i64),
-    Stop(i64),
 }
 
 #[derive(Clone, Debug)]
@@ -105,7 +113,7 @@ type Latest = Arc<Mutex<Option<VideoFrame>>>;
 
 #[derive(Clone)]
 pub struct AudioSink {
-    tx: SyncSender<Command>,
+    queue: Arc<AudioQueue>,
     status: Arc<Mutex<VideoStatus>>,
 }
 impl AudioSink {
@@ -119,19 +127,13 @@ impl AudioSink {
         if !self.status.lock().unwrap().active {
             return Ok(());
         }
-        match self
-            .tx
-            .try_send(Command::Audio(samples.to_vec(), source_qpc_ns))
-        {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Disconnected(_)) => Ok(()),
-            Err(TrySendError::Full(_)) => {
-                self.status.lock().unwrap().error =
-                    Some("動画の音声キューが上限に達しました".into());
-                // Video failure must not stop the shared audio engine.
-                Ok(())
-            }
+        if !self.queue.push(samples.to_vec(), source_qpc_ns) {
+            let mut status = self.status.lock().unwrap();
+            status.audio_queue_rejected_frames = self.queue.stats().rejected;
+            status.error = Some("動画の音声保存が処理速度に追いつかず、録画を中止しました。音声はWAVから確認してください".into());
         }
+        // The shared audio/WAV engine continues even when MP4 fails.
+        Ok(())
     }
 }
 
@@ -169,7 +171,7 @@ impl Recorder {
             .worker
             .take()
             .ok_or_else(|| anyhow::anyhow!("Recorder already stopped"))?;
-        let _ = self.sink.tx.send(Command::Stop(cutoff_qpc_ns));
+        self.sink.queue.stop_at(cutoff_qpc_ns);
         worker
             .join()
             .map_err(|_| anyhow::anyhow!("Video recording worker panicked"))?

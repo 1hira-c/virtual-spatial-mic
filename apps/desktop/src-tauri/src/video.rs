@@ -1,3 +1,4 @@
+use crate::video_connection::{AUTO_SOURCE, AutoPreview, SYNTHETIC_SOURCE};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
@@ -7,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use vsm_core::wave;
-use vsm_video::{AudioSink, Preview, Recorder, VideoConfig, VideoFrame, VideoSource};
+use vsm_video::{AudioSink, Recorder, VideoConfig, VideoFrame, VideoSource};
 
 const DELIVERY_DELAY_NS: i64 = 300_000_000;
 pub type VideoOutput = Arc<dyn Fn(&[f32], i64) + Send + Sync>;
@@ -28,20 +29,29 @@ fn settings(value: &Value) -> Result<Value> {
         "映像入力の名前が不正です"
     );
     ensure!(fps == 30, "初版の録画は30 fpsです");
-    Ok(json!({"enabled":enabled,"sender_name":sender,"fps":fps}))
+    // Preserve only the developer fixture. Product sources are always VRChat.
+    let sender = if sender == SYNTHETIC_SOURCE {
+        SYNTHETIC_SOURCE
+    } else {
+        AUTO_SOURCE
+    };
+    Ok(
+        json!({"enabled":enabled,"sender_name":sender,"fps":fps,"automatic":sender!=SYNTHETIC_SOURCE}),
+    )
 }
 
 struct Active {
     start: i64,
     staging: PathBuf,
     directory: PathBuf,
+    sender_name: String,
 }
 
 pub struct VideoRecording {
     config: Value,
     settings_path: PathBuf,
     recorder: Option<Recorder>,
-    preview: Option<Preview>,
+    preview: AutoPreview,
     tap: Arc<Mutex<Option<AudioSink>>>,
     active: Option<Active>,
     last: Value,
@@ -54,16 +64,19 @@ impl VideoRecording {
         } else {
             json!({})
         })?;
-        let mut out = Self {
+        let preview = AutoPreview::new(
+            config["enabled"] == true,
+            config["sender_name"] == SYNTHETIC_SOURCE,
+        )?;
+        let out = Self {
             config,
             settings_path,
             recorder: None,
-            preview: None,
+            preview,
             tap: Arc::new(Mutex::new(None)),
             active: None,
             last: json!({"active":false,"state":"idle","error":""}),
         };
-        out.open_preview();
         Ok(out)
     }
     pub fn enabled(&self) -> bool {
@@ -79,33 +92,27 @@ impl VideoRecording {
         })
     }
     fn source(&self) -> Result<VideoSource> {
-        let name = self.config["sender_name"].as_str().unwrap();
-        ensure!(!name.is_empty(), "映像入力を選んでください");
-        Ok(if name == "__vsm_test_pattern" {
+        Ok(if self.config["sender_name"] == SYNTHETIC_SOURCE {
             VideoSource::Synthetic {
                 width: 1280,
                 height: 720,
             }
         } else {
+            let connection = self.preview.status();
+            ensure!(
+                connection["active"] == true,
+                "VRChatのカメラでSpoutをONにして、映像の接続を待ってください"
+            );
+            let name = connection["sender_name"]
+                .as_str()
+                .context("VRChat映像の接続先が不明です")?;
             VideoSource::Spout {
                 sender_name: name.into(),
             }
         })
     }
     fn open_preview(&mut self) {
-        self.preview.take();
-        if !self.enabled() || self.config["sender_name"] == "" {
-            return;
-        }
-        match self.source().and_then(Preview::open) {
-            Ok(preview) => self.preview = Some(preview),
-            Err(error) => {
-                if self.last["state"] != "saved" && self.last["state"] != "failed" {
-                    self.last =
-                        json!({"active":false,"state":"waiting","error":format!("{error:#}")});
-                }
-            }
-        }
+        self.preview.suspend(false);
     }
     pub fn configure(&mut self, value: &Value) -> Result<()> {
         ensure!(
@@ -121,13 +128,15 @@ impl VideoRecording {
         wave::save_json(&self.settings_path, &normalized)?;
         self.config = normalized;
         self.last = json!({"active":false,"state":"idle","error":""});
-        self.open_preview();
+        self.preview.configure(
+            self.enabled(),
+            self.config["sender_name"] == SYNTHETIC_SOURCE,
+        );
         Ok(())
     }
     pub fn retry_preview(&mut self) {
-        if !self.recording() && self.preview.as_ref().is_none_or(|p| !p.status().active) {
-            self.open_preview();
-        }
+        // Kept for the legacy enumeration command. Background discovery now
+        // retries automatically, including Spout being enabled after startup.
     }
     pub fn recording_name(&self) -> String {
         self.active
@@ -155,6 +164,10 @@ impl VideoRecording {
     pub fn begin(&mut self, root: &Path) -> Result<i64> {
         ensure!(!self.recording(), "録画中です");
         let source = self.source()?;
+        let sender_name = match &source {
+            VideoSource::Spout { sender_name } => sender_name.clone(),
+            VideoSource::Synthetic { .. } => SYNTHETIC_SOURCE.into(),
+        };
         fs::create_dir_all(root)?;
         ensure!(
             fs2::available_space(root)? >= 1024 * 1024 * 1024,
@@ -162,7 +175,7 @@ impl VideoRecording {
         );
         let requested = vsm_live::clock::now_ns();
         let staging = root.join(format!(".vsm-video-{}-{requested}.mp4", std::process::id()));
-        self.preview.take();
+        self.preview.suspend(true);
         let recorder = match Recorder::start(
             &staging,
             VideoConfig {
@@ -193,6 +206,7 @@ impl VideoRecording {
             start: at,
             staging,
             directory,
+            sender_name,
         });
         self.recorder = Some(recorder);
         Ok(at)
@@ -219,7 +233,7 @@ impl VideoRecording {
             fs::rename(&active.staging, &destination)?;
             let mut metadata = serde_json::to_value(report)?;
             metadata["path"] = json!("video.mp4");
-            metadata["sender_name"] = self.config["sender_name"].clone();
+            metadata["sender_name"] = json!(active.sender_name);
             metadata["timeline"] = json!("source_capture_qpc");
             metadata["monitor_delivery_delay_removed_ns"] = json!(DELIVERY_DELAY_NS);
             metadata["preroll_included"] = json!(false);
@@ -241,6 +255,16 @@ impl VideoRecording {
     }
     pub fn status(&self) -> Value {
         let mut out = self.config.clone();
+        let connection = self.preview.status();
+        out["sender_name"] = self
+            .active
+            .as_ref()
+            .map(|active| json!(active.sender_name))
+            .unwrap_or_else(|| connection["sender_name"].clone());
+        if self.config["sender_name"] == SYNTHETIC_SOURCE {
+            out["sender_name"] = json!(SYNTHETIC_SOURCE);
+        }
+        out["connection"] = connection.clone();
         out["status"] = if let Some(recorder) = &self.recorder {
             let mut status = serde_json::to_value(recorder.status()).unwrap_or_default();
             status["state"] = json!(if status["active"] == true {
@@ -255,11 +279,16 @@ impl VideoRecording {
                 .unwrap_or(Value::Null);
             status
         } else {
-            self.last.clone()
+            if self.enabled()
+                && !["saved", "failed"].contains(&self.last["state"].as_str().unwrap_or(""))
+                && connection["active"] != true
+            {
+                json!({"active":false,"state":"waiting","error":connection["error"].as_str().unwrap_or("")})
+            } else {
+                self.last.clone()
+            }
         };
-        if let Some(preview) = &self.preview {
-            out["preview"] = serde_json::to_value(preview.status()).unwrap_or_default();
-        }
+        out["preview"] = connection;
         out
     }
     /// Clone the latest immutable BGRA frame while briefly holding only its
@@ -268,16 +297,25 @@ impl VideoRecording {
         self.recorder
             .as_ref()
             .and_then(Recorder::latest_frame)
-            .or_else(|| {
-                self.preview
-                    .as_ref()
-                    .filter(|p| p.status().active)
-                    .and_then(Preview::latest_frame)
-            })
+            .or_else(|| self.preview.frame())
     }
 }
 
 pub fn thumbnail(frame: &VideoFrame) -> Option<Value> {
+    let image = bitmap(frame)?;
+    Some(
+        json!({"bmp_base64":STANDARD.encode(image.bytes),"width":image.width,"height":image.height}),
+    )
+}
+
+pub struct Bitmap {
+    pub bytes: Vec<u8>,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Binary BMP is also used by the custom preview protocol, avoiding base64 IPC.
+pub fn bitmap(frame: &VideoFrame) -> Option<Bitmap> {
     let expected = (frame.width as usize)
         .checked_mul(frame.height as usize)?
         .checked_mul(4)?;
@@ -318,12 +356,27 @@ pub fn thumbnail(frame: &VideoFrame) -> Option<Value> {
             bytes[target..target + 3].copy_from_slice(&frame.bgra[index..index + 3]);
         }
     }
-    Some(json!({"bmp_base64":STANDARD.encode(bytes),"width":width,"height":height}))
+    Some(Bitmap {
+        bytes,
+        width,
+        height,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn product_video_settings_are_always_vrchat_while_fixture_is_preserved() {
+        for sender in ["", "OBS", "VRCSender1", "__vsm_vrchat_auto"] {
+            let value = settings(&json!({"enabled":true,"sender_name":sender,"fps":30})).unwrap();
+            assert_eq!(value["sender_name"], AUTO_SOURCE);
+            assert_eq!(value["automatic"], true);
+        }
+        let value = settings(&json!({"sender_name":SYNTHETIC_SOURCE})).unwrap();
+        assert_eq!(value["sender_name"], SYNTHETIC_SOURCE);
+        assert_eq!(value["automatic"], false);
+    }
     #[test]
     fn thumbnail_preserves_top_down_channels_and_scanline_padding() {
         let frame = VideoFrame {
