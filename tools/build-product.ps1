@@ -2,6 +2,8 @@
 param([string]$OutputDirectory = '', [switch]$SkipBuild, [switch]$Release)
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
+$hadEncodedRustFlags = Test-Path -LiteralPath Env:CARGO_ENCODED_RUSTFLAGS
+$originalEncodedRustFlags = $env:CARGO_ENCODED_RUSTFLAGS
 Push-Location $project
 try {
     if ($Release -and $SkipBuild) { throw 'Release packaging requires a fresh product build.' }
@@ -10,6 +12,19 @@ try {
     $config = Get-Content -LiteralPath apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
     $version = $config.version
     if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Expected a numeric product version.' }
+    if ($Release) {
+        # Preserve Cargo's flag precedence and spaces in remapped Windows paths.
+        [string[]]$flags = if ($hadEncodedRustFlags) { if ($originalEncodedRustFlags) { $originalEncodedRustFlags -split [char]31 } else { @() } }
+            elseif ($env:RUSTFLAGS) { @($env:RUSTFLAGS -split '\s+' | Where-Object { $_ }) } else { @() }
+        # rustc uses the last matching prefix: put the narrower project mapping last.
+        foreach ($mapping in @(@{from=$env:USERPROFILE; to='/build/user'}, @{from=$project; to='/virtual-spatial-mic'})) {
+            if (!$mapping.from) { continue }
+            foreach ($prefix in @($mapping.from.Replace('\','/'), $mapping.from.Replace('/','\'))) {
+                $flags += '--remap-path-prefix=' + $prefix + '=' + $mapping.to
+            }
+        }
+        $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
+    }
     if (!$SkipBuild) {
         cargo build --locked --release -p vsm-studio -p vsm-core
         if ($LASTEXITCODE) { throw 'Rust product build failed.' }
@@ -56,4 +71,10 @@ try {
     @{ schema_version=2; name='Virtual Spatial Mic'; version=$version; channel=$(if ($Release) { 'release-candidate' } else { 'development' }); licenses=@{own_code='MIT'; mpl_crates_source=$sourceArchive; hrtf='SADIE II D1 (Apache-2.0)'}; spatializer='sofar 0.3.0 (MIT OR Apache-2.0)'; tested_module_version='0.2.0-preview'; runtime='Rust/Tauri'; target='windows-x64'; python_runtime=$false; node_runtime=$false; cpp_runtime=$false; source_commit=$commit; source_dirty=[bool](git -c ("safe.directory=" + $project) status --porcelain); files=$files } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $destination 'manifest.json') -Encoding utf8
     Write-Output "Product package: $destination"
-} finally { Pop-Location }
+} finally {
+    if ($Release) {
+        if ($hadEncodedRustFlags) { $env:CARGO_ENCODED_RUSTFLAGS = $originalEncodedRustFlags }
+        else { Remove-Item -LiteralPath Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue }
+    }
+    Pop-Location
+}
