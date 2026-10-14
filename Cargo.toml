@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/vsm-core", "crates/vsm-live", "crates/vsm-obs", "apps/desktop/src-tauri"]
+members = ["crates/vsm-core", "crates/vsm-live", "crates/vsm-video", "apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -14,7 +14,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 base64 = "0.22"
-libloading = "0.8"
 
 [profile.release]
 lto = "thin"
+
+# Keep HRTF parsing and convolution usable in debug builds and tests.
+[profile.dev.package.sofar]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3

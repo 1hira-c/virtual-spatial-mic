@@ -10,7 +10,7 @@ use anyhow::{Result, ensure};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -76,7 +76,7 @@ fn update(state: &Mutex<Value>, value: Value) {
     }
 }
 impl Engine {
-    pub fn start(config: Value, library: PathBuf, output: AudioOutput) -> Result<Self> {
+    pub fn start(config: Value, output: AudioOutput) -> Result<Self> {
         vsm_core::session::settings(&config)?;
         let cancel = Arc::new(AtomicBool::new(false));
         let commands = Arc::new(Queue::new(1024 * 1024));
@@ -96,7 +96,7 @@ impl Engine {
         });
         let worker=thread::Builder::new().name("vsm-engine".into()).spawn(move||{
             let status:Status={let info=info.clone();Arc::new(move|value|update(&info,value))};
-            let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||run(&config,&library,stop,controls,output,status,input_levels)));
+            let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||run(&config,stop,controls,output,status,input_levels)));
             match result{Ok(Ok(report))=>update(&info,json!({"active":false,"recording":false,"state":report["status"],"message":if report["status"]=="failed"{format!("入力停止：{}",report["error"].as_str().unwrap_or("unknown"))}else{"入力は無効です".into()},"engine_report":report})),Ok(Err(e))=>update(&info,json!({"active":false,"recording":false,"state":"failed","message":e.to_string()})),Err(_)=>update(&info,json!({"active":false,"recording":false,"state":"failed","message":"音声処理スレッドが異常終了しました"}))}
         })?;
         Ok(Self {
@@ -164,11 +164,6 @@ impl Engine {
         } else {
             peaks
         }
-    }
-    /// Snapshot channel for native host status observers. Never hold its lock
-    /// while calling host APIs or stopping the engine.
-    pub fn shared_status(&self) -> Arc<Mutex<Value>> {
-        self.state.clone()
     }
     pub fn finished(&self) -> bool {
         self.worker.as_ref().is_none_or(JoinHandle::is_finished)
@@ -241,7 +236,6 @@ fn control(
 }
 fn run(
     config: &Value,
-    library: &Path,
     cancel: Arc<AtomicBool>,
     commands: Arc<Queue<Control>>,
     output: AudioOutput,
@@ -250,7 +244,7 @@ fn run(
 ) -> Result<Value> {
     let origin = clock::now_ns();
     let mut ring = Ring::new(config.clone(), origin, status.clone())?;
-    let mut processor = Processor::new(config, origin, library, Some(clock::now_ns))?;
+    let mut processor = Processor::new(config, origin, Some(clock::now_ns))?;
     let audio = Arc::new(Queue::<CaptureEvent>::new(32 * 1024 * 1024));
     let events = Arc::new(Queue::<Value>::new(16 * 1024 * 1024));
     let mut fixtures = VecDeque::new();

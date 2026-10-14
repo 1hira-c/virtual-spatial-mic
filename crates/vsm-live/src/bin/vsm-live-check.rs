@@ -2,7 +2,7 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::{path::Path, sync::Arc, thread, time::Duration};
-use vsm_core::{dsp, wave};
+use vsm_core::wave;
 use vsm_live::{engine::Engine, monitor::Monitor};
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -48,10 +48,6 @@ fn main() -> Result<()> {
     let config = wave::load_json(Path::new(
         args.get(1).context("Expected config JSON or devices")?,
     ))?;
-    let library = args
-        .get(2)
-        .map(std::path::PathBuf::from)
-        .unwrap_or(dsp::packaged_library()?);
     let monitor = if let Some(id) = config["monitor_endpoint"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -63,7 +59,6 @@ fn main() -> Result<()> {
     let out = monitor.clone();
     let mut engine = Engine::start(
         config.clone(),
-        library,
         Arc::new(move |samples, at| {
             if let Some(m) = &out {
                 m.push(samples, at)?;

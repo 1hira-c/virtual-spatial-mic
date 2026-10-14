@@ -1,0 +1,29 @@
+Third-party notice: SADIE II HRTF data
+======================================
+
+vsm.exe embeds head-related impulse responses from the SADIE II Database.
+
+  Subject:  D1 (Neumann KU100 dummy head)
+  File:     D1_48K_24bit_256tap_FIR_SOFA.sofa
+  SHA-256:  e6c72a84dd947b5ef75438ab96a9c2a32ed10f033472b9c4c11a49aff00a8a31
+  Obtained: https://sofacoustics.org/data/database/sadie/D1_48K_24bit_256tap_FIR_SOFA.sofa
+  Project:  https://www.york.ac.uk/sadie-project/database.html
+            https://doi.org/10.5281/zenodo.12092466
+
+Copyright 2018, University of York (AudioLab, Department of Electronic
+Engineering). Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License. You may
+obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+(also included as Apache-2.0.txt). Unless required by applicable law or agreed
+to in writing, software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied. See the License for the specific language governing permissions and
+limitations under the License.
+
+Changes: none to the data. The original SOFA file is stored zlib-compressed
+inside vsm.exe and restored byte for byte (verified by the SHA-256 above)
+before use.
+
+Reference: C. Armstrong, L. Thresh, D. Murphy and G. Kearney, "A Perceptual
+Evaluation of Individual and Non-Individual HRTFs: A Case Study of the SADIE II
+Database", Applied Sciences 8(11):2029, 2018. https://doi.org/10.3390/app8112029

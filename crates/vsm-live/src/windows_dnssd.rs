@@ -1,14 +1,14 @@
 //! Windows owns mDNS discovery reception. VSM advertises separately from a
 //! send-only multicast socket because DNSAPI omits the loopback A record.
 //! DNS-SD advertisements may still use the LAN. No firewall rules are changed.
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use serde_json::{Value, json};
 use std::{
     cell::UnsafeCell,
     collections::BTreeMap,
     ffi::c_void,
     ptr,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use windows::{
@@ -19,36 +19,6 @@ use windows::{
 const PENDING: u32 = 9506; // DNS_REQUEST_PENDING
 type Candidates = Arc<Mutex<BTreeMap<u16, Instant>>>;
 type Info = Arc<Mutex<Value>>;
-
-fn retain_callback_module() -> Result<()> {
-    // The OBS host may unload a plugin after its sources stop. DNSAPI completes
-    // cancellation asynchronously, so its callbacks must remain executable even
-    // during that short interval. Pin the owning module until process exit.
-    use windows::Win32::{
-        Foundation::HMODULE,
-        System::LibraryLoader::{
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
-            GetModuleHandleExW,
-        },
-    };
-    static PIN: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-    let result = PIN.get_or_init(|| {
-        let mut module = HMODULE::default();
-        unsafe {
-            GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                PCWSTR(browsed as *const () as *const u16),
-                &mut module,
-            )
-        }
-        .map_err(|e| e.to_string())
-    });
-    ensure!(
-        result.is_ok(),
-        "DNS-SD callback module could not be retained: {result:?}"
-    );
-    Ok(())
-}
 
 fn error(info: &Info, operation: &str, status: u32) {
     if let Ok(mut value) = info.lock() {
@@ -128,7 +98,6 @@ pub(crate) struct Discovery {
 }
 impl Discovery {
     pub(crate) fn new(candidates: Candidates, info: Info) -> Result<Self> {
-        retain_callback_module()?;
         let query: Vec<u16> = "_oscjson._tcp.local"
             .encode_utf16()
             .chain(Some(0))

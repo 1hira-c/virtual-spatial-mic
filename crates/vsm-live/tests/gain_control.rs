@@ -28,6 +28,8 @@ fn has(values: &[f64], gain: f64) -> bool {
 
 #[test]
 fn preview_gain_recording_lock_and_replay() -> Result<()> {
+    // The app parses the HRTF at startup; timings below assume it is ready.
+    vsm_core::dsp::preload()?;
     let base = common::output("gain-control");
     let events = base.join("events.jsonl");
     common::events(&events, 30)?;
@@ -41,7 +43,6 @@ fn preview_gain_recording_lock_and_replay() -> Result<()> {
     let collected = output.clone();
     let mut engine = Engine::start(
         config,
-        common::library(),
         Arc::new(move |pcm, _| {
             collected.lock().unwrap().extend_from_slice(pcm);
             Ok(())
@@ -90,14 +91,7 @@ fn preview_gain_recording_lock_and_replay() -> Result<()> {
     assert!(!has(&live, -24.) && !has(&live, -12.));
     let events = fs::read_to_string(take.join("raw/osc.events.jsonl"))?;
     assert!(events.contains("gain_change"));
-    let replay = session::reprocess(
-        take,
-        &json!({}),
-        &AtomicBool::new(false),
-        &common::library(),
-        |_| {},
-        true,
-    )?;
+    let replay = session::reprocess(take, &json!({}), &AtomicBool::new(false), |_| {}, true)?;
     assert_eq!(replay["status"], "complete");
     // Locate the output through the public audio-path API; no private filename assumptions.
     let rendered = session::audio_path(take, false)?;
@@ -107,7 +101,6 @@ fn preview_gain_recording_lock_and_replay() -> Result<()> {
         take,
         &json!({"gain_db":-18.}),
         &AtomicBool::new(false),
-        &common::library(),
         |_| {},
         true,
     )?;

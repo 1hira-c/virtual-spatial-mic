@@ -3,7 +3,6 @@ use anyhow::Result;
 use serde_json::json;
 use std::{fs, sync::atomic::AtomicBool};
 use vsm_core::{
-    dsp::Binaural,
     session,
     wave::{self, WaveReader},
 };
@@ -13,12 +12,10 @@ fn reprocess_from_originals_and_protect_latest() -> Result<()> {
     let base = common::output("session");
     let root = common::fixture(&base)?;
     assert!(session::inspect(&root)?["name"].is_string());
-    let library = common::library();
     let cancel = AtomicBool::new(false);
     let before = wave::sha256(&root.join("raw/microphone.wav"))?;
-    let render = |options: &serde_json::Value| {
-        session::reprocess(&root, options, &cancel, &library, |_| {}, true)
-    };
+    let render =
+        |options: &serde_json::Value| session::reprocess(&root, options, &cancel, |_| {}, true);
     let first = render(&json!({}))?;
     let mut reader =
         WaveReader::open(std::path::Path::new(first["output_path"].as_str().unwrap()))?;
@@ -73,7 +70,7 @@ fn reprocess_from_originals_and_protect_latest() -> Result<()> {
     )?;
     assert_eq!(session::inspect(&raw_off)?["can_reprocess"], false);
     assert!(session::audio_path(&raw_off, false)?.is_file());
-    assert!(session::reprocess(&raw_off, &json!({}), &cancel, &library, |_| {}, true).is_err());
+    assert!(session::reprocess(&raw_off, &json!({}), &cancel, |_| {}, true).is_err());
     assert!(session::child(&root, "../outside").is_err());
     wave::save_json(
         &root.join("renders/latest-native.json"),
@@ -105,38 +102,5 @@ fn reprocess_from_originals_and_protect_latest() -> Result<()> {
         result["output_path"].as_str().unwrap(),
     ))?;
     assert_eq!(a, restored.read(0, restored.frames as u32)?);
-    Ok(())
-}
-#[test]
-fn sdk_rejection_keeps_history_and_drain_finishes() -> Result<()> {
-    let library = common::library();
-    let mut a = Binaural::new(&library, 256, true)?;
-    let mut b = Binaural::new(&library, 256, true)?;
-    let mut input = [0.; 256];
-    input[0] = 0.1;
-    let (mut out, mut expected) = ([0.; 512], [0.; 512]);
-    a.process(&input, &mut out, [1., 0., -1.])?;
-    b.process(&input, &mut expected, [1., 0., -1.])?;
-    assert_eq!(out, expected);
-    let mut bad = input;
-    bad[12] = f32::NAN;
-    assert!(a.process(&bad, &mut out, [1., 0., -1.]).is_err());
-    assert!(out.iter().all(|v| *v == 0.));
-    a.process(&input, &mut out, [1., 0., -1.])?;
-    b.process(&input, &mut expected, [1., 0., -1.])?;
-    assert_eq!(out, expected);
-    let mut frames = 0;
-    loop {
-        let (n, done) = a.drain(&mut out)?;
-        frames += n;
-        assert!(frames < 48000);
-        if done {
-            break;
-        }
-    }
-    assert!(frames >= 256);
-    assert!(a.process(&input, &mut out, [1., 0., -1.]).is_err());
-    a.reset();
-    a.process(&input, &mut out, [1., 0., -1.])?;
     Ok(())
 }

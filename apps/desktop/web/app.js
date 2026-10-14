@@ -10,7 +10,95 @@ const setText = (id, text) => {
 };
 let state, config, rows = [], selected, busy = false, lastArchive = '', wasRendering = false, monitorEnabled = false;
 let pendingGain, gainTask, gainTimer, recordingPending = false, renaming;
-let preferredOriginal = false, playerKey = '', playerGeneration = 0, playerLoad = Promise.resolve();
+let preferredOriginal = false, preferredVideo = false, playerKey = '', playerGeneration = 0, playerLoad = Promise.resolve();
+let videoConfigPending = false, previewRequest = false, previewGeneration = 0, lastVideoError = '', lastVideoState = '', wasVideoSaving = false;
+let previewAbort, previewFrameNs = '', previewContext;
+const previewUrl = convertFileSrc('frame', 'vsm-preview');
+let workspace = 'audio', captureWorkspace = 'audio', workspaceInitialized = false, workspacePending = false, workspaceGeneration = 0;
+const captureWorkspaces = ['audio', 'video'];
+const workspaceNames = [...captureWorkspaces, 'library', 'settings'];
+let settingsTask = Promise.resolve(), inputPending = false;
+const workspaceScroll = new Map();
+function showWorkspace(name) {
+  ++workspaceGeneration;
+  if (name !== workspace) {
+    workspaceScroll.set(workspace, window.scrollY || 0);
+    if (workspace === 'library') {
+      // Leaving the library pauses playback without losing the selected take or seek position.
+      for (const id of ['player', 'video-player']) el(id).pause();
+    }
+    clearVideoPreview();
+  }
+  workspace = name;
+  for (const tab of workspaceNames) {
+    const selected = tab === name;
+    el(`tab-${tab}`).setAttribute('aria-selected', String(selected));
+    el(`tab-${tab}`).tabIndex = selected ? 0 : -1;
+    el(`${tab}-panel`).hidden = !selected;
+  }
+  if (captureWorkspaces.includes(name)) {
+    const host = el(`${name}-panel`), live = el('live-panel');
+    if (live.parentElement !== host) host.append(live);
+    live.setAttribute('data-mode', name);
+    setText('live-title', name === 'video' ? '動画収録' : '音声収録');
+    el('audio-stage').hidden = name !== 'audio';
+    el('video-settings').hidden = name !== 'video';
+    const meters = el('capture-meters');
+    const meterHost = el(name === 'video' ? 'control-meters-host' : 'audio-meters-host');
+    if (meters.parentElement !== meterHost) meterHost.append(meters);
+  }
+  try { localStorage.setItem('vsm.workspace', name); } catch { /* Tabs work without storage. */ }
+  window.scrollTo?.(0, workspaceScroll.get(name) || 0);
+  updateWorkspace();
+}
+function updateWorkspace() {
+  const engine = state?.engine || {}, video = state?.video || {};
+  const recording = !!engine.recording || !!video.status?.active;
+  const saving = engine.archive_state === 'finalizing' || video.status?.state === 'finalizing' || (!recording && !recordingPending && !!engine.gain_locked);
+  const locked = videoLocked() || workspacePending || videoConfigPending;
+  for (const name of workspaceNames) {
+    const tab = el(`tab-${name}`);
+    tab.disabled = !workspaceInitialized || (captureWorkspaces.includes(name) && (workspacePending || (name !== captureWorkspace && locked)));
+    tab.toggleAttribute('data-recording', name === captureWorkspace && recording);
+    tab.title = tab.disabled && workspaceInitialized ? '収録・保存が終わると切り替えられます' : '';
+  }
+  el('capture-strip').hidden = workspace !== 'settings' && (workspace !== 'library' || !(engine.active || recording || saving || recordingPending));
+  const obsLinked = state?.obs_link?.status?.state === 'connected' && !video.status?.active;
+  setText('capture-summary', saving ? '保存中…' : recording ? (video.status?.active ? '録画中' : obsLinked ? '録音中 · OBSに連動' : '録音中') : recordingPending ? '収録を開始中…' : engine.active ? '入力待機中' : '入力は無効です');
+  el('capture-strip').classList.toggle('recording', recording);
+  el('capture-stop').hidden = !recording;
+  el('capture-stop').disabled = busy || recordingPending || saving || obsLinked;
+  setText('capture-stop', video.status?.active ? '録画を停止' : '録音を停止');
+}
+async function switchWorkspace(name) {
+  if (!workspaceNames.includes(name) || !workspaceInitialized || name === workspace) return;
+  if (!captureWorkspaces.includes(name) || name === captureWorkspace) { showWorkspace(name); return; }
+  if (busy || videoLocked() || videoConfigPending) return;
+  busy = true;
+  workspacePending = true;
+  const generation = workspaceGeneration;
+  videoConfigPending = true;
+  notice('');
+  clearVideoPreview();
+  el('record-toggle').disabled = true;
+  updateWorkspace();
+  try {
+    await invoke('video_configure', { value: videoSettingsValue(name === 'video') });
+    captureWorkspace = name;
+    if (generation === workspaceGeneration) showWorkspace(name);
+    await poll();
+  } catch (error) {
+    // The previous tab stays selected when a mode change is rejected.
+    try { await poll(); } catch { /* Retain the original configuration error. */ }
+    notice(error);
+  } finally {
+    busy = false;
+    workspacePending = false;
+    videoConfigPending = false;
+    updateVideoState();
+    updateWorkspace();
+  }
+}
 // A separate small IPC snapshot keeps the meters responsive without refreshing
 // diagnostics or the recording library at audio-meter cadence.
 const levelViews = ['input', 'left', 'right'].map(name => {
@@ -69,7 +157,7 @@ function notice(error) {
     setText('runtime', 'バックエンド未接続');
   }
 }
-function action(id, fn) { el(id).addEventListener('click', async () => { if (busy) return; busy = true; notice(''); try { await fn(); await poll(); } catch (e) { notice(e); } finally { busy = false; } }); }
+function action(id, fn, refreshState = true) { el(id).addEventListener('click', async () => { if (busy) return; busy = true; notice(''); try { await fn(); if (refreshState) await poll(); } catch (e) { notice(e); } finally { busy = false; } }); }
 function updateSaveSummary() {
   const root = el('output-root').textContent;
   const name = root.split(/[\\/]/).filter(Boolean).pop() || '未設定';
@@ -77,7 +165,153 @@ function updateSaveSummary() {
   el('save-summary').textContent = `${name} · ${raw}`;
   el('save-summary').title = `${root} · ${raw}`;
 }
-function applyConfig(c) { config = c; el('microphone').value = c.endpoint_id; el('channel').value = c.channel; el('gain').value = c.gain_db; el('gain-value').value = `${c.gain_db} dB`; el('save-raw').checked = c.save_raw; el('output-root').textContent = c.output_root; el('output-root').title = c.output_root; el('monitor-device').value = c.monitor_endpoint; }
+function updateCaptureDeviceSummary() {
+  const microphone = el('microphone');
+  const option = [...microphone.options].find(value => value.value === microphone.value);
+  const name = option?.textContent || 'システム既定のマイク';
+  el('capture-device-summary').textContent = `${name} · ch ${Number(el('channel').value) + 1}`;
+  el('capture-device-summary').title = name;
+}
+function settingsValue() {
+  return { ...config, endpoint_id: el('microphone').value, channel: Number(el('channel').value), gain_db: Number(el('gain').value), save_raw: el('save-raw').checked, monitor_endpoint: el('monitor-device').value };
+}
+function updateDeviceAvailability() {
+  const locked = inputPending || !!state?.engine?.active;
+  for (const id of ['microphone', 'channel', 'save-raw', 'choose-root']) el(id).disabled = locked;
+  el('input-toggle').disabled = inputPending;
+  el('monitor-device').disabled = inputPending;
+  el('gain').disabled = inputPending || !!state?.engine?.recording || !!state?.video?.status?.active || !!state?.engine?.gain_locked || recordingPending;
+}
+function persistDeviceSettings() {
+  updateCaptureDeviceSummary();
+  updateSaveSummary();
+  if (inputPending || state?.engine?.active) return;
+  // Serialize changes and leave the controls intact when an earlier save completes.
+  settingsTask = settingsTask.then(async () => {
+    if (inputPending || state?.engine?.active) return;
+    await flushGain();
+    config = await invoke('configure', { value: settingsValue() });
+  }).catch(notice);
+}
+function applyObsSettings(o) { el('obs-enabled').checked = !!o.enabled; el('obs-host').value = o.host; el('obs-port').value = o.port; el('obs-password').value = ''; el('obs-password').placeholder = o.password_set ? '変更しない場合は空欄' : '未設定'; }
+const obsLabels = { off: '無効', connecting: '接続中…', connected: '接続済み', auth_failed: 'パスワードが違います', disconnected: '未接続', stopped: '停止' };
+function obsText(o) {
+  const s = o.status || {};
+  let text = obsLabels[s.state] || s.state || '';
+  if (s.state === 'connected') text += o.obs_recording ? ' · OBS録画中' : ' · OBS録画待ち';
+  if (s.error && s.state !== 'auth_failed') text += `：${s.error}`;
+  return text;
+}
+function videoLocked() {
+  const engine = state?.engine || {}, video = state?.video?.status || {};
+  return !!engine.recording || !!video.active || !!engine.gain_locked || recordingPending || engine.archive_state === 'finalizing' || video.state === 'finalizing';
+}
+function videoSettingsValue(enabled = !!state?.video?.enabled) {
+  return { enabled, sender_name: state?.video?.sender_name || '', fps: 30, audio_offset_ms: state?.video?.audio_offset_ms ?? 0 };
+}
+async function saveVideoAudioOffset() {
+  if (busy || videoLocked() || videoConfigPending || inputPending) return;
+  const input = el('video-audio-offset-ms');
+  const value = input.value.trim(), offset = Number(value);
+  if (!value || !Number.isInteger(offset) || offset < -2000 || offset > 2000) {
+    notice('動画の音声タイミングは−2000〜2000 msの整数で入力してください。');
+    return;
+  }
+  busy = true;
+  videoConfigPending = true;
+  notice('');
+  el('record-toggle').disabled = true;
+  updateVideoState();
+  updateWorkspace();
+  try {
+    const configured = await invoke('video_configure', { value: { ...videoSettingsValue(), audio_offset_ms: offset } });
+    state.video.audio_offset_ms = configured.audio_offset_ms ?? offset;
+    input.value = String(state.video.audio_offset_ms);
+    await poll();
+  } catch (error) {
+    // Keep a rejected value available to correct; persisted settings stay unchanged.
+    notice(error);
+  } finally {
+    busy = false;
+    videoConfigPending = false;
+    updateVideoState();
+    updateWorkspace();
+  }
+}
+function videoConnected(video = state?.video || {}) {
+  return !!video.status?.active || video.connection?.state === 'connected';
+}
+function updateVideoState() {
+  const video = state?.video || {}, status = video.status || {}, connection = video.connection || {};
+  if (!videoConfigPending) el('video-enabled').checked = !!video.enabled;
+  el('video-options').hidden = !el('video-enabled').checked;
+  el('video-enabled').disabled = videoLocked() || videoConfigPending;
+  const timing = el('video-audio-offset-ms');
+  timing.disabled = videoLocked() || videoConfigPending || inputPending;
+  if (!videoConfigPending && document.activeElement !== timing) timing.value = String(video.audio_offset_ms ?? 0);
+  const connected = videoConnected(video);
+  const size = connection.width && connection.height ? ` · ${connection.width}×${connection.height}` : '';
+  const saveError = status.state === 'waiting' ? '' : status.error;
+  let text = !video.enabled ? '待機中' : connected ? `接続済み${size}` : connection.state === 'connecting' ? '接続中…' : '探しています…';
+  let errorMessage = '';
+  if (status.state === 'finalizing') text = '保存中…';
+  else if (status.active) text = `録画中${size}`;
+  if (saveError) {
+    text = status.state === 'saved' ? `保存済み · 映像の警告：${saveError}` : `動画保存に失敗：${saveError}`;
+    errorMessage = status.state === 'saved' ? `動画は保存しましたが、映像取得に問題がありました：${saveError}` : `動画保存に失敗しました：${saveError}`;
+  }
+  el('video-state').textContent = text;
+  el('video-state').title = connection.error || '';
+  el('video-preview-hint').textContent = connected ? '映像を待っています…' : 'VRChatでカメラを開き、Spout出力をONにしてください';
+  if (!connected) clearVideoPreview();
+  const errorKey = errorMessage ? `${status.state}:${errorMessage}` : '';
+  if (errorKey && errorKey !== lastVideoError) notice(errorMessage);
+  lastVideoError = errorKey;
+}
+function clearVideoPreview() {
+  ++previewGeneration;
+  previewAbort?.abort();
+  previewFrameNs = '';
+  el('video-preview').hidden = true;
+  el('video-preview-hint').hidden = false;
+}
+async function pollVideoPreview() {
+  if (document.hidden || workspace !== 'video' || !state?.video?.enabled || videoConfigPending || !videoConnected()) {
+    if (previewAbort || !el('video-preview').hidden) clearVideoPreview();
+    return;
+  }
+  if (previewRequest) return;
+  previewRequest = true;
+  const generation = previewGeneration, controller = new AbortController();
+  previewAbort = controller;
+  let bitmap;
+  try {
+    // One frame in flight: late frames never accumulate behind the live image.
+    const response = await fetch(`${previewUrl}?after=${encodeURIComponent(previewFrameNs)}`, { signal: controller.signal, cache: 'no-store' });
+    if (generation !== previewGeneration || response.status === 204) return;
+    if (!response.ok) return;
+    bitmap = await createImageBitmap(await response.blob());
+    if (generation !== previewGeneration || document.hidden || workspace !== 'video') return;
+    const canvas = el('video-preview');
+    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+    }
+    previewContext ||= canvas.getContext('2d', { alpha: false, desynchronized: true });
+    previewContext.drawImage(bitmap, 0, 0);
+    previewFrameNs = response.headers.get('X-VSM-Frame-Ns') || '';
+    canvas.hidden = false;
+    el('video-preview-hint').hidden = true;
+  } catch { /* Connection/recording status reports failures without interrupting audio. */ }
+  finally {
+    bitmap?.close();
+    if (previewAbort === controller) previewAbort = undefined;
+    previewRequest = false;
+  }
+}
+setInterval(pollVideoPreview, 1000 / 30);
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearVideoPreview(); });
+function applyConfig(c) { config = c; el('microphone').value = c.endpoint_id; el('channel').value = c.channel; el('gain').value = c.gain_db; el('gain-value').value = `${c.gain_db} dB`; el('save-raw').checked = c.save_raw; el('output-root').textContent = c.output_root; el('output-root').title = c.output_root; el('monitor-device').value = c.monitor_endpoint; updateCaptureDeviceSummary(); }
 function flushGain() {
   clearTimeout(gainTimer);
   gainTimer = undefined;
@@ -100,8 +334,24 @@ function flushGain() {
   }).finally(() => { gainTask = undefined; });
   return gainTask;
 }
-async function save() { applyConfig(await invoke('configure', { value: { ...config, endpoint_id: el('microphone').value, channel: Number(el('channel').value), gain_db: Number(el('gain').value), save_raw: el('save-raw').checked, monitor_endpoint: el('monitor-device').value } })); }
-function select(row) { if (renaming && recordingKey(renaming) !== recordingKey(row.directory)) closeRename(); selected = row; el('selected-name').textContent = row.name || '録音'; el('selected-info').textContent = row.message || ''; el('play-processed').disabled = !row.audio_path; el('play-original').disabled = !row.raw_saved; el('reveal').disabled = false; el('render').disabled = !row.can_reprocess || !!state?.render.active; el('render-gain').value = row.config?.gain_db ?? -18; el('rename').disabled = !canRename(); renderList(); syncPlayer().catch(notice); }
+async function save() { await settingsTask; applyConfig(await invoke('configure', { value: settingsValue() })); }
+function select(row) {
+  if (renaming && recordingKey(renaming) !== recordingKey(row.directory)) closeRename();
+  if (recordingKey(selected?.directory) !== recordingKey(row.directory)) preferredVideo = !!row.video_path;
+  selected = row;
+  el('selected-name').textContent = row.name || '録音';
+  el('selected-info').textContent = row.message || '';
+  el('play-video').hidden = !row.video_path;
+  el('play-video').disabled = !row.video_path;
+  el('play-processed').disabled = !row.audio_path;
+  el('play-original').disabled = !row.raw_saved;
+  el('reveal').disabled = false;
+  el('render').disabled = !row.can_reprocess || !!state?.render.active;
+  el('render-gain').value = row.config?.gain_db ?? -18;
+  el('rename').disabled = !canRename();
+  renderList();
+  syncPlayer().catch(notice);
+}
 function renderList() {
   const box = el('recordings');
   box.replaceChildren();
@@ -124,7 +374,7 @@ function renderList() {
       title.title = row.name;
     const badge = document.createElement('span');
     badge.className = 'version-chip';
-    badge.textContent = row.can_reprocess ? 'RAW+VSM' : 'VSM';
+    badge.textContent = row.video_path ? '動画' : row.can_reprocess ? 'RAW+VSM' : 'VSM';
     rowTop.append(title, badge);
     const info = document.createElement('small');
     info.textContent = row.can_reprocess ? '原音データあり · 再処理可能' : (row.message || 'バイノーラル処理済み');
@@ -152,11 +402,15 @@ function clearPlayer() {
   ++playerGeneration;
   playerKey = '';
   playerLoad = Promise.resolve();
-  el('player').pause();
-  el('player').removeAttribute('src');
-  el('player').load();
+  for (const id of ['player', 'video-player']) {
+    el(id).pause();
+    el(id).removeAttribute('src');
+    el(id).load();
+  }
+  el('player').hidden = false;
+  el('video-player').hidden = true;
   el('playing').textContent = '';
-  for (const id of ['play-processed', 'play-original']) {
+  for (const id of ['play-video', 'play-processed', 'play-original']) {
     el(id).setAttribute('aria-pressed', 'false');
     el(id).classList.remove('btn-primary');
     el(id).classList.add('btn-secondary');
@@ -164,13 +418,16 @@ function clearPlayer() {
 }
 async function syncPlayer(autoplay = false) {
   const row = selected;
-  if (!row?.audio_path && !row?.raw_saved) {
+  if (!row?.video_path && !row?.audio_path && !row?.raw_saved) {
     clearPlayer();
-    el('playing').textContent = row ? '再生できる音声がありません' : '';
+    el('playing').textContent = row ? '再生できるファイルがありません' : '';
     return;
   }
-  const original = row.raw_saved && (preferredOriginal || !row.audio_path);
-  const key = JSON.stringify([recordingKey(row.directory), !!original, original ? '' : row.audio_path]);
+  const video = !!row.video_path && (preferredVideo || (!row.audio_path && !row.raw_saved));
+  const original = !video && row.raw_saved && (preferredOriginal || !row.audio_path);
+  const kind = video ? 'video' : original ? 'original' : 'processed';
+  const player = el(video ? 'video-player' : 'player');
+  const key = JSON.stringify([recordingKey(row.directory), kind, video ? row.video_path : original ? '' : row.audio_path]);
   // Refreshing the list must not reset playback or its seek position.
   if (key !== playerKey) {
     clearPlayer();
@@ -178,13 +435,17 @@ async function syncPlayer(autoplay = false) {
     const generation = playerGeneration;
     playerLoad = (async () => {
       try {
-        const path = await invoke('recording_audio', { path: row.directory, original: !!original });
+        const path = video
+          ? await invoke('recording_video', { path: row.directory })
+          : await invoke('recording_audio', { path: row.directory, original: !!original });
         // A slower previous selection must never replace the current recording.
         if (generation !== playerGeneration) return;
-        el('player').src = convertFileSrc(path);
-        el('player').load();
-        el('playing').textContent = original ? '原音 (RAW)' : '処理済み音声';
-        const id = original ? 'play-original' : 'play-processed';
+        player.src = convertFileSrc(path);
+        player.load();
+        el('player').hidden = video;
+        el('video-player').hidden = !video;
+        el('playing').textContent = video ? '動画 · 処理済み音声' : original ? '原音 (RAW)' : '処理済み音声';
+        const id = video ? 'play-video' : original ? 'play-original' : 'play-processed';
         el(id).setAttribute('aria-pressed', 'true');
         el(id).classList.add('btn-primary');
         el(id).classList.remove('btn-secondary');
@@ -197,15 +458,26 @@ async function syncPlayer(autoplay = false) {
   }
   const generation = playerGeneration;
   await playerLoad;
-  if (autoplay && generation === playerGeneration && playerKey === key && el('player').getAttribute('src')) {
-    try { await el('player').play(); }
+  if (autoplay && workspace === 'library' && generation === playerGeneration && playerKey === key && player.getAttribute('src')) {
+    try { await player.play(); }
     catch (error) { if (generation === playerGeneration) throw error; }
   }
 }
-async function play(original) { preferredOriginal = original; await syncPlayer(true); }
+async function play(original) { preferredVideo = false; preferredOriginal = original; await syncPlayer(true); }
+async function playVideo() { preferredVideo = true; await syncPlayer(true); }
 async function poll() {
   state = await invoke('studio_status');
-  const e = state.engine, active = !!e.active, recording = !!e.recording;
+  const e = state.engine, active = !!e.active, recording = !!e.recording || !!state.video?.status?.active;
+  if (!workspaceInitialized) {
+    captureWorkspace = state.video?.enabled ? 'video' : 'audio';
+    workspaceInitialized = true;
+    let saved;
+    try { saved = localStorage.getItem('vsm.workspace'); } catch { /* Use the current capture mode. */ }
+    showWorkspace(saved === 'library' || saved === 'settings' ? saved : captureWorkspace);
+  } else if (!workspacePending) {
+    captureWorkspace = state.video?.enabled ? 'video' : 'audio';
+    if (captureWorkspaces.includes(workspace) && workspace !== captureWorkspace) showWorkspace(captureWorkspace);
+  }
   if (recording || !active || e.archive_state === 'failed') recordingPending = false;
   monitorEnabled = state.monitor_enabled;
   if (state.fixture) {
@@ -221,18 +493,22 @@ async function poll() {
   el('live-state').classList.toggle('waiting', active && !e.pose_ready);
   setText('input-toggle', active ? '入力を無効にする' : '入力を有効にする');
   el('input-toggle').classList.toggle('active', active);
-  el('record-toggle').disabled = !active;
-  setText('record-toggle', recording ? '録音を停止' : '録音を開始');
+  const obs = state.obs_link, obsLinked = obs.status?.state === 'connected';
+  updateVideoState();
+  const video = state.video || {}, finalizing = video.status?.state === 'finalizing' || e.archive_state === 'finalizing' || (!recording && !recordingPending && !!e.gain_locked);
+  el('record-toggle').disabled = videoConfigPending || workspacePending || !active || (obsLinked && !video.status?.active) || recordingPending || finalizing || (!recording && !!e.gain_locked) || (!recording && video.enabled && !videoConnected(video));
+  setText('record-toggle', video.enabled ? (recording ? '録画を停止' : '録画を開始') : (recording ? '録音を停止' : '録音を開始'));
   el('record-toggle').classList.toggle('recording', recording);
-  el('record-state').textContent = recording ? '録音中' : active ? '待機中 · 直前の音声も保持しています' : '';
+  el('record-state').textContent = finalizing ? '保存中…' : recording ? (video.status?.active ? '録画中' : obsLinked ? '録音中 · OBSの録画に連動' : '録音中') : active ? (obsLinked ? 'OBSの録画開始を待っています · 直前の音声も保持しています' : '待機中 · 直前の音声も保持しています') : '';
+  el('obs-state').textContent = obsText(obs);
+  el('obs-summary').textContent = obs.enabled ? obsText(obs) : '無効';
   el('pose-state').textContent = e.message || '';
-  for (const id of ['microphone','channel','save-raw','choose-root']) el(id).disabled = active;
-  el('gain').disabled = recording || !!e.gain_locked || recordingPending;
+  updateDeviceAvailability();
   el('monitor-toggle').disabled = !active;
   setText('monitor-toggle', monitorEnabled ? 'モニター停止' : 'モニター開始');
   el('monitor-state').textContent = state.monitor.error || (state.monitor.ready ? '出力中' : monitorEnabled ? '準備中' : '');
   updateSaveSummary();
-  el('connection').textContent = e.network ? JSON.stringify(e.network, null, 2) : '未接続';
+  el('connection').textContent = JSON.stringify({ osc: e.network || '未接続', camera: video.connection || {}, preview: video.preview_transport || {}, recording: video.status || {} }, null, 2);
   const r = state.render;
   el('cancel').hidden = !r.active;
   el('progress').hidden = !r.active;
@@ -243,11 +519,16 @@ async function poll() {
   if (e.archive_error) notice(`保存に失敗しました：${e.archive_error}`);
   else if (e.state === 'failed') notice(e.message);
   const archive = e.last_directory || '';
-  if ((wasRendering && !r.active) || archive !== lastArchive) {
+  const videoFinished = wasVideoSaving && !video.status?.active && !finalizing;
+  const videoSaved = video.status?.state === 'saved' && lastVideoState !== 'saved';
+  if ((wasRendering && !r.active) || archive !== lastArchive || videoFinished || videoSaved) {
     lastArchive = archive;
     await refresh();
   }
   wasRendering = !!r.active;
+  wasVideoSaving = !!video.status?.active || finalizing;
+  lastVideoState = video.status?.state || '';
+  updateWorkspace();
 }
 function canRename() {
   return !!selected && ['stopped', 'complete', 'failed', 'cancelled'].includes(selected.status) && !state?.render.active;
@@ -300,36 +581,75 @@ el('rename-form').addEventListener('submit', async event => {
     el('rename-cancel').disabled = false;
   }
 });
-action('input-toggle', async () => { await flushGain(); if (!state.engine.active) await save(); await invoke('input_enable', { enabled: !state.engine.active }); });
-action('record-toggle', async () => {
-  const stopping = !!state.engine.recording;
+action('input-toggle', async () => {
+  inputPending = true;
+  updateDeviceAvailability();
+  try {
+    await flushGain();
+    if (!state.engine.active) await save();
+    await invoke('input_enable', { enabled: !state.engine.active });
+    // Keep device choices locked until the status confirms the running input.
+    await poll();
+  } finally {
+    inputPending = false;
+    updateDeviceAvailability();
+  }
+}, false);
+async function toggleRecording() {
+  const stopping = !!state.engine.recording || !!state.video?.status?.active;
   recordingPending = !stopping;
   el('gain').disabled = true;
+  el('video-enabled').disabled = true;
+  el('video-audio-offset-ms').disabled = true;
   try {
     await flushGain();
     await invoke('record_control', { recording: !stopping });
   } catch (error) { recordingPending = false; throw error; }
   if (stopping) setTimeout(() => refresh().catch(notice), 900);
+}
+action('record-toggle', toggleRecording);
+action('capture-stop', async () => { if (state?.engine.recording || state?.video?.status?.active) await toggleRecording(); });
+el('capture-return').addEventListener('click', () => switchWorkspace(captureWorkspace));
+el('capture-open-settings').addEventListener('click', () => switchWorkspace('settings'));
+for (const name of workspaceNames) {
+  el(`tab-${name}`).addEventListener('click', () => switchWorkspace(name));
+  el(`tab-${name}`).addEventListener('keydown', async event => {
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const available = workspaceNames.filter(value => !el(`tab-${value}`).disabled);
+    const index = available.indexOf(name);
+    const next = event.key === 'Home' ? available[0] : event.key === 'End' ? available.at(-1) : available[(index + (event.key === 'ArrowDown' ? 1 : -1) + available.length) % available.length];
+    if (!next) return;
+    el(`tab-${next}`).focus();
+    await switchWorkspace(next);
+    if (workspace === next) el(`tab-${next}`).focus();
+  });
+}
+action('obs-save', async () => {
+  await invoke('obs_link_configure', { value: { enabled: el('obs-enabled').checked, host: el('obs-host').value, port: Number(el('obs-port').value), password: el('obs-password').value } });
+  applyObsSettings((await invoke('studio_status')).obs_link);
 });
 action('monitor-toggle', () => invoke('monitor_enable', { enabled: !monitorEnabled, endpoint: el('monitor-device').value }));
 action('choose-root', async () => { const r = await invoke('choose_folder', { purpose: 'recordings' }); if (r?.config) { applyConfig(r.config); rows = []; selected = undefined; await refresh(); } });
 action('open-session', async () => { const r = await invoke('choose_folder', { purpose: 'session' }); if (r?.session) { rows = rows.filter(v => v.directory !== r.session.directory); rows.unshift(r.session); select(r.session); } else if (r?.config) { applyConfig(r.config); await refresh(); } });
 action('open-recordings', () => invoke('reveal_recordings_root'));
-action('refresh', refresh); action('play-processed', () => play(false)); action('play-original', () => play(true)); action('reveal', () => invoke('reveal_recording', { path: selected.directory }));
+action('refresh', refresh); action('play-video', playVideo); action('play-processed', () => play(false)); action('play-original', () => play(true)); action('reveal', () => invoke('reveal_recording', { path: selected.directory }));
 action('render', () => invoke('reprocess_recording', { path: selected.directory, options: { gain_db: Number(el('render-gain').value), source_mode: el('source-mode').value } })); action('cancel', () => invoke('cancel_reprocess'));
 el('gain').addEventListener('input', () => {
   el('gain-value').value = `${el('gain').value} dB`;
   pendingGain = Number(el('gain').value);
   if (!gainTimer) gainTimer = setTimeout(() => flushGain().catch(notice), 50);
 });
-el('save-raw').addEventListener('change', updateSaveSummary);
-for (const id of ['save-settings', 'reprocess-settings']) {
+el('video-audio-offset-ms').addEventListener('change', saveVideoAudioOffset);
+for (const id of ['microphone', 'channel', 'monitor-device', 'save-raw']) el(id).addEventListener('change', persistDeviceSettings);
+for (const id of ['save-settings', 'obs-settings', 'reprocess-settings']) {
   const key = `vsm.${id}.open`;
   try { el(id).open = localStorage.getItem(key) === 'true'; } catch { /* Storage may be unavailable. */ }
   el(id).addEventListener('toggle', () => {
     try { localStorage.setItem(key, String(el(id).open)); } catch { /* Keep disclosures usable without storage. */ }
   });
 }
-el('player').addEventListener('error', () => { if (el('player').src) notice('音声を再生できませんでした。保存場所からWAVを確認できます。'); });
-async function initialize() { await poll(); const devices = await invoke('audio_devices'); for (const [key, id] of [['inputs','microphone'], ['outputs','monitor-device']]) { for (const d of devices[key] || []) { const option = document.createElement('option'); option.value = d.endpoint_id || d.id; option.textContent = `${d.name || d.friendly_name}${d.supported === false ? '（形式未対応）' : ''}`; option.disabled = d.supported === false; el(id).append(option); } } applyConfig(state.config); if (devices.message) notice(devices.message); await refresh(); }
+el('player').addEventListener('error', () => { if (el('player').getAttribute('src')) notice('音声を再生できませんでした。保存場所からWAVを確認できます。'); });
+el('video-player').addEventListener('error', () => { if (el('video-player').getAttribute('src')) notice('動画を再生できませんでした。保存場所からMP4を確認できます。'); });
+async function initialize() { await poll(); const devices = await invoke('audio_devices'); for (const [key, id] of [['inputs','microphone'], ['outputs','monitor-device']]) { for (const d of devices[key] || []) { const option = document.createElement('option'); option.value = d.endpoint_id || d.id; option.textContent = `${d.name || d.friendly_name}${d.supported === false ? '（形式未対応）' : ''}`; option.disabled = d.supported === false; el(id).append(option); } } applyConfig(state.config); applyObsSettings(state.obs_link); if (devices.message) notice(devices.message); await refresh(); }
 initialize().catch(notice).finally(() => { setInterval(() => { if (!busy) poll().catch(notice); }, 700); });

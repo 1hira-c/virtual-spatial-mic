@@ -131,6 +131,19 @@ pub fn audio_path(root: &Path, original: bool) -> Result<PathBuf> {
     ensure!(p.is_file(), "再処理すると試聴できます");
     Ok(p)
 }
+pub fn video_path(root: &Path) -> Result<PathBuf> {
+    // Only authorize a file inside the selected take. Legacy OBS paths can point
+    // outside it, so an untrusted manifest cannot expand the asset scope.
+    let metadata = manifest(root)?;
+    let name = metadata["video_path"].as_str().unwrap_or("video.mp4");
+    let name = if name.is_empty() { "video.mp4" } else { name };
+    let path = child(root, name)?;
+    ensure!(
+        path.is_file() && path.extension().is_some_and(|e| e == "mp4"),
+        "動画は保存されていません"
+    );
+    Ok(path)
+}
 pub fn inspect(root: &Path) -> Result<Value> {
     let root = root.canonicalize()?;
     let m = manifest(&root)?;
@@ -157,7 +170,7 @@ pub fn inspect(root: &Path) -> Result<Value> {
         "原音と位置データから再処理できます"
     };
     Ok(
-        json!({"directory":root,"name":root.file_name().unwrap_or_default().to_string_lossy(),"kind":kind,"status":status,"can_reprocess":supported&&stopped&&raw&&logs,"raw_saved":raw,"config":settings(m.get("config").unwrap_or(&json!({})))?,"video_path":m["video_path"].as_str().unwrap_or(""),"message":message,"audio_path":audio_path(&root,false).map(|p|p.to_string_lossy().into_owned()).unwrap_or_default()}),
+        json!({"directory":root,"name":root.file_name().unwrap_or_default().to_string_lossy(),"kind":kind,"status":status,"can_reprocess":supported&&stopped&&raw&&logs,"raw_saved":raw,"config":settings(m.get("config").unwrap_or(&json!({})))?,"video_path":video_path(&root).map(|p|p.to_string_lossy().into_owned()).unwrap_or_default(),"message":message,"audio_path":audio_path(&root,false).map(|p|p.to_string_lossy().into_owned()).unwrap_or_default()}),
     )
 }
 pub fn rename(root: &Path, name: &str) -> Result<PathBuf> {
@@ -318,7 +331,6 @@ pub fn reprocess(
     root: &Path,
     options: &Value,
     cancel: &AtomicBool,
-    library: &Path,
     mut progress: impl FnMut(Value),
     publish_latest: bool,
 ) -> Result<Value> {
@@ -382,12 +394,12 @@ pub fn reprocess(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros()
     ));
     fs::create_dir(&folder)?;
-    let mut report = json!({"kind":"rust_session_reprocess","schema_version":1,"status":"processing","runtime":"rust","config":cfg,"input_hashes":hashes,"python_runtime":false,"project_cpp_runtime":false,"offline_equivalent":false,"output":"binaural.wav","camera_policy":"hold_last_received_pose"});
+    let mut report = json!({"kind":"rust_session_reprocess","schema_version":1,"status":"processing","runtime":"rust","config":cfg,"input_hashes":hashes,"python_runtime":false,"project_cpp_runtime":false,"spatializer":crate::dsp::SPATIALIZER,"offline_equivalent":false,"output":"binaural.wav","camera_policy":"hold_last_received_pose"});
     save_json(&folder.join("report.json"), &report)?;
     let result = (|| -> Result<()> {
         let mut output = WaveWriter::create(&folder.join("binaural.wav"), 2)?;
         let mut poses = BufWriter::new(File::create(folder.join("applied-poses.jsonl"))?);
-        let mut processor = Processor::new(&cfg, 0, library, None)?;
+        let mut processor = Processor::new(&cfg, 0, None)?;
         if let Some(db) = options["gain_db"].as_f64() {
             processor.override_gain(db)?;
         }

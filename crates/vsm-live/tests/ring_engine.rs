@@ -16,6 +16,8 @@ use vsm_core::{
 use vsm_live::engine::Engine;
 
 fn exercise(base: &Path, raw: bool, fail: bool) -> Result<Value> {
+    // The app parses the HRTF at startup; timings below assume it is ready.
+    vsm_core::dsp::preload()?;
     fs::create_dir(base)?;
     let events = base.join("fixture.events.jsonl");
     common::events(&events, 30)?;
@@ -35,7 +37,6 @@ fn exercise(base: &Path, raw: bool, fail: bool) -> Result<Value> {
     let collected = samples.clone();
     let mut engine = Engine::start(
         config,
-        common::library(),
         Arc::new(move |audio, _| {
             collected.lock().unwrap().extend_from_slice(audio);
             Ok(())
@@ -114,7 +115,6 @@ fn exercise(base: &Path, raw: bool, fail: bool) -> Result<Value> {
                 path,
                 &json!({}),
                 &std::sync::atomic::AtomicBool::new(false),
-                &common::library(),
                 |_| {},
                 false,
             )?;

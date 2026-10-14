@@ -11,7 +11,7 @@ fn rename_preserves_originals_and_replay() -> Result<()> {
     let raw_hash = wave::sha256(&root.join("raw/microphone.wav"))?;
     let manifest_hash = wave::sha256(&root.join("session.json"))?;
     let cancel = AtomicBool::new(false);
-    session::reprocess(&root, &json!({}), &cancel, &common::library(), |_| {}, true)?;
+    session::reprocess(&root, &json!({}), &cancel, |_| {}, true)?;
     let output_hash = wave::sha256(&session::audio_path(&root, false)?)?;
     let occupied = base.join("既存の録音");
     fs::create_dir(&occupied)?;
@@ -46,14 +46,7 @@ fn rename_preserves_originals_and_replay() -> Result<()> {
         output_hash,
         wave::sha256(&session::audio_path(&moved, false)?)?
     );
-    session::reprocess(
-        &moved,
-        &json!({}),
-        &cancel,
-        &common::library(),
-        |_| {},
-        true,
-    )?;
+    session::reprocess(&moved, &json!({}), &cancel, |_| {}, true)?;
     assert_eq!(
         output_hash,
         wave::sha256(&session::audio_path(&moved, false)?)?

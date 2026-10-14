@@ -541,7 +541,20 @@ impl Ring {
                 // Use the Start event's local wall time, not engine startup or disk queue time.
                 let started = chrono::Local::now()
                     - chrono::Duration::nanoseconds(clock::now_ns().saturating_sub(at));
-                let name = started.format("%Y%m%d-%H%M%S").to_string();
+                let name = if let Some(name) = event["recording_name"].as_str() {
+                    ensure!(
+                        name.len() == 15
+                            && name.as_bytes()[8] == b'-'
+                            && name
+                                .bytes()
+                                .enumerate()
+                                .all(|(i, b)| i == 8 || b.is_ascii_digit()),
+                        "Invalid recording name"
+                    );
+                    name.to_owned()
+                } else {
+                    started.format("%Y%m%d-%H%M%S").to_string()
+                };
                 self.sequence += 1;
                 let id = self.sequence;
                 self.recording_id = id;
@@ -552,7 +565,7 @@ impl Ring {
                         end: json!({}),
                     },
                 );
-                let meta = json!({"schema_version":"0.2.0","kind":"native_obs_ring_take","runtime":"rust","session_origin_ns":self.origin,"engine_id":self.engine_id,"recording_name":name,"recording_started_local":started.to_rfc3339(),"config":self.config,"audio_format":self.format,"recording_start_qpc_ns":at,"start_event":event,"requested_preroll_seconds":self.horizon as f64/1e9,"ring_evictions_by_capacity":self.dropped,"camera_policy":"hold_last_received_pose","wav_size_policy":"RIFF_then_RF64","python_runtime":false,"project_cpp_runtime":false,"delivery_delay_ns":300000000,"processing_wait_ns":100000000,"dsp_latency_frames":64,"offline_equivalent":false});
+                let meta = json!({"schema_version":"0.2.0","kind":"native_obs_ring_take","runtime":"rust","session_origin_ns":self.origin,"engine_id":self.engine_id,"recording_name":name,"recording_started_local":started.to_rfc3339(),"config":self.config,"audio_format":self.format,"recording_start_qpc_ns":at,"start_event":event,"requested_preroll_seconds":self.horizon as f64/1e9,"ring_evictions_by_capacity":self.dropped,"camera_policy":"hold_last_received_pose","wav_size_policy":"RIFF_then_RF64","python_runtime":false,"project_cpp_runtime":false,"delivery_delay_ns":300000000,"processing_wait_ns":100000000,"dsp_latency_frames":vsm_core::dsp::LATENCY_FRAMES,"spatializer":vsm_core::dsp::SPATIALIZER,"offline_equivalent":false});
                 let mut seed = Vec::new();
                 if let Some(base) = &self.baseline {
                     let mut state = base.meta.clone();
@@ -587,7 +600,7 @@ impl Ring {
                     .as_i64()
                     .context("Missing recording stop time")?;
                 active.end_at = at - self.origin + 500_000_000;
-                active.end = json!({"status":"stopped","stop_reason":"obs_recording_stopped","recording_stop_qpc_ns":at,"video_path":event["video_path"].as_str().unwrap_or("")});
+                active.end = json!({"status":"stopped","stop_reason":event["stop_reason"].as_str().unwrap_or("obs_recording_stopped"),"recording_stop_qpc_ns":at,"video_path":event["video_path"].as_str().unwrap_or("")});
                 let cost = event.to_string().len();
                 self.jobs.push(Job::Mark(id, event), cost, false);
             }

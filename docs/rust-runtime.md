@@ -1,10 +1,10 @@
 # 製品構成
 
-単体版とOBSプラグインは共通のRust処理を使います。単体版の画面にはTauriを使い、音声入出力と空間処理はRust側で行います。
+VSMは単体アプリ1つで動作します。画面にはTauriを使い、音声入出力と空間処理はRust側で行います。HRTFデータはexeに埋め込まれており、追加のDLLは不要です。
 
-- `standalone/`：`vsm.exe`、再処理用の `vsm-native.exe`、Steam Audioの `phonon.dll`、ライセンス資料
-- `obs/vrc-binaural-studio/`：OBSプラグイン、`phonon.dll`、ライセンス資料
+- `Virtual Spatial Mic/vsm.exe`：単体版
+- `Virtual Spatial Mic/vsm-native.exe`：保存記録の一覧・確認・再処理を行うコマンドラインツール
+- `Virtual Spatial Mic/licenses/`：第三者notice
+- `Virtual Spatial Mic/OBS.md`：OBSで使う手順
 
-DLLは同梱された配置を保ってください。単体版はWindows x64とWebView2 Runtimeを必要とします。OBSプラグインのビルド対象APIはOBS 32.2.2です。正式な対応バージョン範囲は検証中です。
-
-OBSはライブ処理を継続し、録画開始・停止に合わせて保存します。単体版を同時に起動する必要はありません。
+Windows x64とWebView2 Runtimeが必要です。OBSへの音声は、Windowsの出力デバイスを経由して「アプリケーション音声キャプチャ」または仮想オーディオケーブルで渡します。録画開始・停止との連動にはOBS 28以降に内蔵されたWebSocketサーバーを使います。OBSプラグインのインストールは不要です。
